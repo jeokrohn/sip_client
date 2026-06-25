@@ -167,6 +167,7 @@ def test_numeric_extension_targets_resolve_against_calling_client_registrar(tmp_
     lab = _lab(tmp_path)
 
     assert lab.resolve_call_target("alice", "7109") == "sip:7109@registrar.example.invalid"
+    assert lab.resolve_call_target("charlie", "7109") == "sip:7109@registrar.example.invalid"
     assert lab.resolve_call_target("alice", "sip:7109@example.invalid") == "sip:7109@example.invalid"
 
 
@@ -187,6 +188,14 @@ def _lab(tmp_path: Path) -> CallLab:
                 username_env="BOB_USER",
                 password_env="BOB_PASS",
             ),
+            SipClientConfig(
+                name="charlie",
+                id_uri="sip:charlie@example.invalid",
+                registrar_uri="sip:registrar.example.invalid",
+                username_env="CHARLIE_USER",
+                password_env="CHARLIE_PASS",
+                transport="udp",
+            ),
         ),
         targets=(),
         artifacts_dir=tmp_path / "artifacts",
@@ -195,6 +204,8 @@ def _lab(tmp_path: Path) -> CallLab:
             "ALICE_PASS": "secret",
             "BOB_USER": "bob",
             "BOB_PASS": "secret",
+            "CHARLIE_USER": "charlie",
+            "CHARLIE_PASS": "secret",
         },
     )
     config = LabConfig(

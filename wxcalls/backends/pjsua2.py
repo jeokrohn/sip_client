@@ -101,6 +101,8 @@ class Pjsua2SipBackend:
         acc_cfg.sipConfig.authCreds.append(
             pj.AuthCredInfo("digest", "*", credentials.username, 0, credentials.password)
         )
+        _validate_secure_signaling_for_mandatory_srtp(client)
+        _configure_srtp(acc_cfg, pj)
         _set_video_count(acc_cfg, 1 if client.enable_video else 0)
 
         account = _create_account_adapter(self, client.name)
@@ -162,7 +164,7 @@ class Pjsua2SipBackend:
             state="calling",
         )
         prm = self.pj.CallOpParam(True)
-        _set_call_video_count(prm, 1 if video else 0)
+        _set_call_media_counts(prm, video_count=1 if video else 0, text_count=0)
         pj_call.makeCall(target_uri, prm)
         await self.wait_call_state(handle, "connected", timeout=timeout)
         return handle
@@ -187,8 +189,9 @@ class Pjsua2SipBackend:
     async def answer(self, call: CallHandle, status_code: int = 200) -> None:
         """Answer an incoming call."""
 
-        prm = self.pj.CallOpParam()
+        prm = self.pj.CallOpParam(True)
         prm.statusCode = int(status_code)
+        _set_call_media_counts(prm, video_count=0, text_count=0)
         self._call(call).answer(prm)
         await self.wait_call_state(call, "connected", timeout=30.0)
 
@@ -215,6 +218,7 @@ class Pjsua2SipBackend:
         """Place a call on hold."""
 
         prm = self.pj.CallOpParam(True)
+        _set_call_media_counts(prm, video_count=1 if call.video_active else 0, text_count=0)
         self._call(call).setHold(prm)
         call.state = "held"
 
@@ -222,6 +226,7 @@ class Pjsua2SipBackend:
         """Resume a held call using re-INVITE."""
 
         prm = self.pj.CallOpParam(True)
+        _set_call_media_counts(prm, video_count=1 if call.video_active else 0, text_count=0)
         self._call(call).reinvite(prm)
         await self.wait_call_state(call, "connected", timeout=30.0)
 
@@ -516,13 +521,91 @@ def _set_video_count(config_or_param: Any, count: int) -> None:
         video_config.autoTransmitOutgoing = count > 0
 
 
-def _set_call_video_count(call_param: Any, count: int) -> None:
+def _configure_srtp(account_config: Any, pj: Any) -> None:
+    """Require SRTP negotiation for Webex Calling account media.
+
+    :param account_config: PJSUA2 account configuration object.
+    :param pj: Imported ``pjsua2`` module.
+    :raises BackendError: If the PJSUA2 binding does not expose SRTP controls.
+    """
+
+    media_config = getattr(account_config, "mediaConfig", None)
+    srtp_opt = getattr(media_config, "srtpOpt", None)
+    srtp_mandatory = getattr(pj, "PJMEDIA_SRTP_MANDATORY", None)
+    sdes_keying = getattr(pj, "PJMEDIA_SRTP_KEYING_SDES", None)
+    crypto_cls = getattr(pj, "SrtpCrypto", None)
+    if (
+        media_config is None
+        or srtp_opt is None
+        or srtp_mandatory is None
+        or sdes_keying is None
+        or crypto_cls is None
+        or not hasattr(media_config, "srtpUse")
+    ):
+        raise BackendError("PJSUA2 binding does not expose SRTP account media configuration")
+
+    # BroadWorks/Webex can offer RTP/SAVP with SDES crypto for inbound calls.
+    # Mandatory SRTP keeps all live calls on secure media and rejects plain RTP.
+    # Webex still uses sip: URIs over TLS, so URI-based secure-signaling enforcement
+    # must stay disabled here; client config validation enforces TLS/SIPS instead.
+    media_config.srtpUse = srtp_mandatory
+    if hasattr(media_config, "srtpSecureSignaling"):
+        media_config.srtpSecureSignaling = 0
+    _clear_vector(srtp_opt.cryptos)
+    crypto = crypto_cls()
+    crypto.name = "AES_CM_128_HMAC_SHA1_80"
+    srtp_opt.cryptos.append(crypto)
+    _clear_vector(srtp_opt.keyings)
+    srtp_opt.keyings.append(sdes_keying)
+
+
+def _validate_secure_signaling_for_mandatory_srtp(client: SipClientConfig) -> None:
+    """Validate that a live client uses secure signaling with mandatory SRTP.
+
+    :param client: SIP client configuration.
+    :raises BackendError: If the client is not configured for TLS/SIPS signaling.
+    """
+
+    proxy_uri = client.proxy_uri.lower() if client.proxy_uri else ""
+    if client.transport.lower() == "tls" or proxy_uri.startswith("sips:") or "transport=tls" in proxy_uri:
+        return
+    raise BackendError(
+        f"Client {client.name} requires TLS or SIPS signaling because live PJSUA2 calls require SRTP"
+    )
+
+
+def _clear_vector(vector: Any) -> None:
+    """Clear a PJSUA2 SWIG vector or Python list.
+
+    :param vector: Vector-like object.
+    """
+
+    if hasattr(vector, "clear"):
+        vector.clear()
+        return
+    del vector[:]
+
+
+def _set_call_media_counts(call_param: Any, video_count: int, text_count: int) -> None:
+    """Set per-call media counts while preserving the default audio stream.
+
+    :param call_param: PJSUA2 call operation parameter.
+    :param video_count: Number of video streams to offer.
+    :param text_count: Number of text streams to offer.
+    """
+
     opt = getattr(call_param, "opt", None)
     if opt is None:
         return
+    for attr in ("audioCount", "audCnt"):
+        if hasattr(opt, attr):
+            setattr(opt, attr, 1)
     for attr in ("videoCount", "vidCnt"):
         if hasattr(opt, attr):
-            setattr(opt, attr, count)
+            setattr(opt, attr, video_count)
+    for attr in ("textCount", "txtCnt"):
+        if hasattr(opt, attr):
+            setattr(opt, attr, text_count)
 
 
 def _is_audio_type(pj: Any, media_type: Any) -> bool:

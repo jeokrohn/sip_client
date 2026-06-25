@@ -71,6 +71,12 @@ steps:
 
 Numeric targets such as `"7109"` are treated as extensions and dialed against the calling client's registrar host.
 
+The live PJSUA2 backend requires SRTP on each account. Webex/BroadWorks inbound calls can offer `RTP/SAVP`
+with SDES `a=crypto`, while still using `sip:` URIs over TLS. Client configs must use TLS transport, a `sips:`
+proxy, or `;transport=tls`; plain RTP endpoints are rejected by design. SRTP offers are constrained to SDES
+`AES_CM_128_HMAC_SHA1_80` to match Webex/BroadWorks answers. Voice scenarios offer one audio stream and disable
+PJSUA2 text media negotiation.
+
 ## Registration watch scenarios
 
 The `register` step can keep one or more clients registered before moving to the next step.
