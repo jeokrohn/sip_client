@@ -1,0 +1,21 @@
+name: device1-answer-incoming
+steps:
+  - action: register
+    client: device1
+    timeout: 30
+  - action: expect_incoming
+    client: device1
+    save_as: device1_incoming
+    timeout: 120
+  - action: answer
+    call: device1_incoming
+  - action: wait_media
+    call: device1_incoming
+    timeout: 30
+  - action: play_tts
+    call: device1_incoming
+    text: "test call established. Pls. hang up"
+  - action: wait_state
+    call: device1_incoming
+    state: disconnected
+    timeout: 120

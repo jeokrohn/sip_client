@@ -111,7 +111,7 @@ def test_fake_backend_runs_attended_transfer(tmp_path: Path) -> None:
     assert lab.calls["primary"].state == "transferred"
 
 
-def test_progress_reporter_receives_call_lifecycle_messages(tmp_path: Path) -> None:
+def test_progress_reporter_receives_step_and_call_lifecycle_messages(tmp_path: Path) -> None:
     messages: list[str] = []
     lab = _lab(tmp_path, progress_reporter=messages.append)
     scenario = parse_scenario(
@@ -134,8 +134,12 @@ def test_progress_reporter_receives_call_lifecycle_messages(tmp_path: Path) -> N
 
     asyncio.run(run())
     assert messages == [
+        "step 1/4: register",
+        "step 2/4: call",
         "call initiated: alice -> sip:webex@example.invalid (outbound)",
         "call established: outbound alice <-> sip:webex@example.invalid",
+        "step 3/4: wait_state",
+        "step 4/4: hangup",
         "call ended: outbound alice <-> sip:webex@example.invalid",
     ]
 

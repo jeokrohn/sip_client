@@ -126,8 +126,10 @@ class CallLab:
         """
 
         self.artifacts.record_event("scenario_started", name=scenario.name, source=str(scenario.source or ""))
+        step_count = len(scenario.steps)
         for step in scenario.steps:
             self.artifacts.record_event("step_started", index=step.index, action=step.action)
+            self._progress(f"step {step.index}/{step_count}: {step.action}")
             await self._run_step(step)
             self.artifacts.record_event("step_finished", index=step.index, action=step.action)
         self.artifacts.record_event("scenario_finished", name=scenario.name)
@@ -254,37 +256,48 @@ class CallLab:
         timeout = float(params.get("timeout", 30.0))
         deadline = asyncio.get_running_loop().time() + timeout
         while not call.media_active:
+            if call.state == "disconnected":
+                self._report_call_ended(str(params["call"]), call)
+                raise WxTimeoutError(f"Call {call.id} disconnected before audio media became active")
             if asyncio.get_running_loop().time() >= deadline:
                 raise WxTimeoutError(f"Timed out waiting for audio media on call {call.id}")
             await asyncio.sleep(0.01)
         self.artifacts.record_event("call_media_seen", call=call.id, media="audio")
 
     async def _step_play_tts(self, params: dict[str, Any]) -> None:
-        call = self._call(str(params["call"]))
+        call_ref = str(params["call"])
+        call = self._call(call_ref)
         asset = self.media_factory.prepare_tts(
             text=str(params["text"]),
             marker=str(params["marker"]) if params.get("marker") else None,
             voice=str(params["voice"]) if params.get("voice") else None,
         )
+        self._progress(f"playing TTS: {call_ref} <- {asset.path}")
         await self.backend.play_wav(call, asset.path)
         self.artifacts.record_event("tts_played", call=call.id, path=str(asset.path), marker=asset.marker)
+        self._progress(f"played TTS: {call_ref}")
 
     async def _step_play_wav(self, params: dict[str, Any]) -> None:
-        call = self._call(str(params["call"]))
+        call_ref = str(params["call"])
+        call = self._call(call_ref)
         asset = self.media_factory.prepare_wav(
             source=Path(str(params["path"])),
             marker=str(params["marker"]) if params.get("marker") else None,
         )
+        self._progress(f"playing WAV: {call_ref} <- {asset.path}")
         await self.backend.play_wav(call, asset.path)
         self.artifacts.record_event("wav_played", call=call.id, path=str(asset.path), marker=asset.marker)
+        self._progress(f"played WAV: {call_ref}")
 
     async def _step_record(self, params: dict[str, Any]) -> None:
         call = self._call(str(params["call"]))
         name = str(params.get("save_as", "recording"))
         path = self.artifacts.path_for("media", name, ".wav")
+        self._progress(f"recording media: {params['call']} -> {path}")
         await self.backend.record_wav(call, path, seconds=float(params.get("seconds", 3.0)))
         self.recordings[name] = path
         self.artifacts.record_event("recorded", call=call.id, recording=name, path=str(path))
+        self._progress(f"recorded media: {path}")
 
     async def _step_assert_marker(self, params: dict[str, Any]) -> None:
         recording = self.recordings.get(str(params["recording"]))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import wave
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -77,11 +78,12 @@ class Pjsua2SipBackend:
             self.poll_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self.poll_task
-        if self.endpoint is not None:
-            self.endpoint.libDestroy()
-        self.accounts.clear()
+        self._release_media_objects()
         self.calls.clear()
         self.call_handles.clear()
+        self.accounts.clear()
+        if self.endpoint is not None:
+            self.endpoint.libDestroy()
 
     async def register_client(
         self,
@@ -245,29 +247,56 @@ class Pjsua2SipBackend:
         """Play a WAV file into a connected call."""
 
         pj_call = self._call(call)
-        audio_media = pj_call.audio_media
+        await _wait_for_audio_media_quiet(pj_call, quiet_seconds=1.0, timeout=5.0)
+        audio_media = _active_audio_media(self.pj, pj_call)
         if audio_media is None:
             raise BackendError(f"Call {call.id} has no active audio media")
-        player = self.pj.AudioMediaPlayer()
+        duration = _wav_duration_seconds(path)
+        player = _create_audio_player_adapter(self, audio_media)
         flags = getattr(self.pj, "PJMEDIA_FILE_NO_LOOP", 0)
         player.createPlayer(str(path), flags)
-        player.startTransmit(audio_media)
         pj_call.players.append(player)
+        started = False
+        try:
+            _start_audio_player_route(player, audio_media)
+            started = True
+            await _wait_until_playback_finishes(player, call, seconds=duration + 1.0)
+        finally:
+            if started:
+                _stop_audio_player(player)
+                await asyncio.sleep(0.05)
+            else:
+                _mark_audio_player_transmitting(player, False)
+            with suppress(ValueError):
+                pj_call.players.remove(player)
 
     async def record_wav(self, call: CallHandle, output_path: Path, seconds: float) -> None:
         """Record call audio to a WAV file."""
 
         pj_call = self._call(call)
-        audio_media = pj_call.audio_media
+        audio_media = _active_audio_media(self.pj, pj_call)
         if audio_media is None:
             raise BackendError(f"Call {call.id} has no active audio media")
         output_path.parent.mkdir(parents=True, exist_ok=True)
         recorder = self.pj.AudioMediaRecorder()
         recorder.createRecorder(str(output_path))
-        audio_media.startTransmit(recorder)
-        await asyncio.sleep(seconds)
-        audio_media.stopTransmit(recorder)
         pj_call.recorders.append(recorder)
+        started = False
+        try:
+            audio_media.startTransmit(recorder)
+            started = True
+            await asyncio.sleep(seconds)
+        finally:
+            stop_error = None
+            if started:
+                try:
+                    audio_media.stopTransmit(recorder)
+                except Exception as exc:
+                    stop_error = exc
+            with suppress(ValueError):
+                pj_call.recorders.remove(recorder)
+            if stop_error is not None and not _recording_file_has_content(output_path):
+                raise BackendError(f"Failed to stop recording for call {call.id}: {stop_error}") from stop_error
 
     async def video_smoke(
         self,
@@ -345,6 +374,19 @@ class Pjsua2SipBackend:
         if attr is None or not hasattr(pj, attr):
             raise BackendError(f"Unsupported or unavailable PJSIP transport: {transport}")
         return getattr(pj, attr)
+
+    def _release_media_objects(self) -> None:
+        """Release retained PJSUA2 media objects before endpoint destruction."""
+
+        for pj_call in self.calls.values():
+            players = getattr(pj_call, "players", None)
+            if players is not None:
+                for player in list(players):
+                    _stop_audio_player(player)
+                players.clear()
+            recorders = getattr(pj_call, "recorders", None)
+            if recorders is not None:
+                recorders.clear()
 
     async def _poll_events(self) -> None:
         self._require_ready()
@@ -438,6 +480,8 @@ def _create_call_adapter(
             self.audio_media: Any | None = None
             self.players: list[Any] = []
             self.recorders: list[Any] = []
+            self.media_update_seq = 0
+            self.last_media_update_at = 0.0
 
         def onCallState(self, prm: Any) -> None:  # noqa: N802 - PJSUA2 callback name
             """PJSUA2 callback for call-state changes."""
@@ -457,14 +501,17 @@ def _create_call_adapter(
             if handle is None:
                 return
             try:
+                self.media_update_seq += 1
+                self.last_media_update_at = self.backend.loop.time()
                 info = self.getInfo()
                 for index, media in enumerate(info.media):
                     media_type = getattr(media, "type", None)
-                    status = str(getattr(media, "status", "")).lower()
-                    if _is_audio_type(self.backend.pj, media_type) and "active" in status:
+                    status = getattr(media, "status", None)
+                    if _is_audio_type(self.backend.pj, media_type) and _is_active_media_status(self.backend.pj, status):
                         self.audio_media = self.getAudioMedia(index)
                         handle.media_active = True
-                    if _is_video_type(self.backend.pj, media_type) and "active" in status:
+                        _reroute_audio_players(self, self.audio_media)
+                    if _is_video_type(self.backend.pj, media_type) and _is_active_media_status(self.backend.pj, status):
                         handle.video_active = True
             except Exception:
                 return
@@ -586,6 +633,264 @@ def _clear_vector(vector: Any) -> None:
     del vector[:]
 
 
+def _recording_file_has_content(path: Path) -> bool:
+    """Return whether a recorder produced a non-empty artifact.
+
+    :param path: Recording path.
+    :returns: ``True`` when the path exists and has bytes.
+    """
+
+    try:
+        return path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _active_audio_media(pj: Any, pj_call: Any) -> Any | None:
+    """Return the currently active PJSUA2 audio media for a call.
+
+    :param pj: Imported ``pjsua2`` module.
+    :param pj_call: PJSUA2 call adapter.
+    :returns: Active audio media, if available.
+    """
+
+    try:
+        info = pj_call.getInfo()
+        for index, media in enumerate(info.media):
+            media_type = getattr(media, "type", None)
+            status = getattr(media, "status", None)
+            if _is_audio_type(pj, media_type) and _is_active_media_status(pj, status):
+                audio_media = pj_call.getAudioMedia(index)
+                pj_call.audio_media = audio_media
+                return audio_media
+    except Exception:
+        return getattr(pj_call, "audio_media", None)
+    return getattr(pj_call, "audio_media", None)
+
+
+async def _wait_for_audio_media_quiet(pj_call: Any, quiet_seconds: float, timeout: float) -> None:
+    """Wait until no PJSUA2 audio-media callback has fired for a short period.
+
+    :param pj_call: PJSUA2 call adapter.
+    :param quiet_seconds: Required quiet period before returning.
+    :param timeout: Maximum time to wait for quiescence.
+    """
+
+    if not hasattr(pj_call, "media_update_seq"):
+        return
+
+    loop = asyncio.get_running_loop()
+    observed_seq = int(getattr(pj_call, "media_update_seq", 0))
+    quiet_started = loop.time()
+    deadline = quiet_started + timeout
+    while True:
+        now = loop.time()
+        current_seq = int(getattr(pj_call, "media_update_seq", observed_seq))
+        if current_seq != observed_seq:
+            observed_seq = current_seq
+            quiet_started = now
+        if now - quiet_started >= quiet_seconds:
+            return
+        if now >= deadline:
+            return
+        await asyncio.sleep(min(0.05, quiet_seconds - (now - quiet_started), deadline - now))
+
+
+def _create_audio_player_adapter(backend: Pjsua2SipBackend, audio_media: Any) -> Any:
+    """Create an EOF-aware PJSUA2 audio player.
+
+    :param backend: Owning PJSUA2 backend.
+    :param audio_media: Destination call audio media.
+    :returns: Player object with a ``wxcalls_eof`` event.
+    """
+
+    player_cls = backend.pj.AudioMediaPlayer
+    if isinstance(player_cls, type):
+
+        class AudioPlayerAdapter(player_cls):  # type: ignore[valid-type,misc]
+            """PJSUA2 player that marks EOF and stops its bridge route."""
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.wxcalls_eof = asyncio.Event()
+                self.wxcalls_transmitting = False
+                self.wxcalls_audio_media = audio_media
+                self.wxcalls_loop = backend.loop
+
+            def onEof2(self) -> None:  # noqa: N802 - PJSUA2 callback name
+                """PJSUA2 callback fired when one-shot WAV playback reaches EOF."""
+
+                _stop_audio_player(self)
+
+        return AudioPlayerAdapter()
+
+    player = player_cls()
+    player.wxcalls_eof = asyncio.Event()
+    player.wxcalls_transmitting = False
+    player.wxcalls_audio_media = audio_media
+    player.wxcalls_loop = backend.loop
+    return player
+
+
+def _reroute_audio_players(pj_call: Any, audio_media: Any) -> None:
+    """Reconnect active WAV players after a call audio port changes.
+
+    :param pj_call: PJSUA2 call adapter.
+    :param audio_media: New active call audio media.
+    """
+
+    port_id = _audio_media_port_id(audio_media)
+    for player in list(getattr(pj_call, "players", [])):
+        if _audio_player_eof_seen(player) or not getattr(player, "wxcalls_transmitting", False):
+            continue
+        if port_id is not None and _audio_player_is_routed_to(player, port_id):
+            player.wxcalls_audio_media = audio_media
+            continue
+        _mark_audio_player_transmitting(player, False)
+        with suppress(Exception):
+            _start_audio_player_route(player, audio_media)
+
+
+def _start_audio_player_route(player: Any, audio_media: Any) -> None:
+    """Start routing a player into the supplied audio media.
+
+    :param player: PJSUA2 audio player.
+    :param audio_media: Destination call audio media.
+    """
+
+    player.wxcalls_audio_media = audio_media
+    _mark_audio_player_transmitting(player, True)
+    try:
+        player.startTransmit(audio_media)
+    except Exception:
+        _mark_audio_player_transmitting(player, False)
+        raise
+
+
+def _mark_audio_player_transmitting(player: Any, transmitting: bool) -> None:
+    """Record whether a player route has been started.
+
+    :param player: PJSUA2 audio player.
+    :param transmitting: Current route state.
+    """
+
+    with suppress(Exception):
+        player.wxcalls_transmitting = transmitting
+
+
+def _stop_audio_player(player: Any) -> None:
+    """Stop player transmission and signal EOF/cleanup waiters.
+
+    :param player: PJSUA2 audio player.
+    """
+
+    audio_media = getattr(player, "wxcalls_audio_media", None)
+    if audio_media is not None and getattr(player, "wxcalls_transmitting", False):
+        with suppress(Exception):
+            player.stopTransmit(audio_media)
+        _mark_audio_player_transmitting(player, False)
+    _set_audio_player_eof(player)
+
+
+def _audio_player_eof_seen(player: Any) -> bool:
+    """Return whether a player's EOF event has been signalled.
+
+    :param player: PJSUA2 audio player.
+    :returns: ``True`` once playback has completed.
+    """
+
+    event = getattr(player, "wxcalls_eof", None)
+    return bool(event is not None and event.is_set())
+
+
+def _audio_player_is_routed_to(player: Any, port_id: int) -> bool:
+    """Return whether a player is currently transmitting to a port.
+
+    :param player: PJSUA2 audio player.
+    :param port_id: Destination conference port id.
+    :returns: ``True`` when the player has the destination in its listener list.
+    """
+
+    try:
+        listeners = player.getPortInfo().listeners
+    except Exception:
+        return False
+    return any(int(listener) == port_id for listener in listeners)
+
+
+def _set_audio_player_eof(player: Any) -> None:
+    """Signal a player's EOF event on its owning asyncio loop.
+
+    :param player: PJSUA2 audio player.
+    """
+
+    event = getattr(player, "wxcalls_eof", None)
+    if event is None:
+        return
+    loop = getattr(player, "wxcalls_loop", None)
+    if loop is not None and not loop.is_closed():
+        loop.call_soon_threadsafe(event.set)
+    else:
+        event.set()
+
+
+def _audio_media_port_id(audio_media: Any | None) -> int | None:
+    """Return a conference port id for an audio media wrapper.
+
+    :param audio_media: PJSUA2 audio media wrapper.
+    :returns: Conference port id, if available.
+    """
+
+    if audio_media is None:
+        return None
+    try:
+        return int(audio_media.getPortId())
+    except Exception:
+        return None
+
+
+def _wav_duration_seconds(path: Path) -> float:
+    """Return the duration of a WAV file.
+
+    :param path: WAV file path.
+    :returns: Duration in seconds.
+    :raises BackendError: If the WAV file cannot be inspected.
+    """
+
+    try:
+        with wave.open(str(path), "rb") as wav:
+            frame_rate = wav.getframerate()
+            if frame_rate <= 0:
+                raise BackendError(f"Invalid WAV frame rate for {path}: {frame_rate}")
+            return wav.getnframes() / frame_rate
+    except (OSError, EOFError, wave.Error) as exc:
+        raise BackendError(f"Unable to inspect WAV duration for {path}: {exc}") from exc
+
+
+async def _wait_until_playback_finishes(player: Any, call: CallHandle, seconds: float) -> None:
+    """Wait for PJSUA2 player EOF, playback duration, or call disconnect.
+
+    :param player: PJSUA2 audio player.
+    :param call: Call being played into.
+    :param seconds: Maximum playback wait in seconds.
+    """
+
+    eof_event = getattr(player, "wxcalls_eof", None)
+    deadline = asyncio.get_running_loop().time() + seconds
+    while call.state != "disconnected":
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return
+        if eof_event is None:
+            await asyncio.sleep(min(0.05, remaining))
+            continue
+        try:
+            await asyncio.wait_for(eof_event.wait(), timeout=min(0.05, remaining))
+            return
+        except TimeoutError:
+            continue
+
+
 def _set_call_media_counts(call_param: Any, video_count: int, text_count: int) -> None:
     """Set per-call media counts while preserving the default audio stream.
 
@@ -614,3 +919,17 @@ def _is_audio_type(pj: Any, media_type: Any) -> bool:
 
 def _is_video_type(pj: Any, media_type: Any) -> bool:
     return hasattr(pj, "PJMEDIA_TYPE_VIDEO") and media_type == pj.PJMEDIA_TYPE_VIDEO
+
+
+def _is_active_media_status(pj: Any, status: Any) -> bool:
+    """Return whether a PJSUA2 media status is active.
+
+    :param pj: Imported ``pjsua2`` module.
+    :param status: Media status value from ``CallInfo.media``.
+    :returns: ``True`` when the media stream is active.
+    """
+
+    active = getattr(pj, "PJSUA_CALL_MEDIA_ACTIVE", None)
+    if active is not None and status == active:
+        return True
+    return "active" in str(status).lower()
