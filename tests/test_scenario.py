@@ -37,7 +37,7 @@ def test_device1_call_7109_scenario_matches_expected_flow() -> None:
         "play_tts",
         "wait_state",
     ]
-    assert scenario.steps[1].params["target"] == "7109"
+    assert scenario.steps[1].params["target"] == "80027109"
     assert scenario.steps[-1].params == {
         "call": "device1_to_7109",
         "state": "disconnected",

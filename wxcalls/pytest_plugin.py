@@ -84,7 +84,12 @@ class ScenarioItem(pytest.Item):
         backend = self.config.getoption("--wxcalls-backend")
 
         async def run() -> None:
-            async with lab_from_config(config, env_file=env_file, backend_name=backend) as lab:
+            async with lab_from_config(
+                config,
+                env_file=env_file,
+                backend_name=backend,
+                progress_reporter=_print_progress,
+            ) as lab:
                 await lab.run_scenario_path(self.path)
 
         asyncio.run(run())
@@ -135,6 +140,7 @@ def run_scenario(request: pytest.FixtureRequest) -> Any:
                 request.config.getoption("--wxcalls-config"),
                 env_file=request.config.getoption("--wxcalls-env-file"),
                 backend_name=request.config.getoption("--wxcalls-backend"),
+                progress_reporter=_print_progress,
             ) as lab:
                 await lab.run_scenario_path(path)
 
@@ -149,3 +155,12 @@ def _expanded_scenarios(config: pytest.Config) -> list[Path]:
         matches = [Path(match) for match in glob.glob(pattern)]
         paths.extend(matches or [Path(pattern)])
     return paths
+
+
+def _print_progress(message: str) -> None:
+    """Print one scenario progress line.
+
+    :param message: Progress message from the orchestrator.
+    """
+
+    print(f"[wxcalls] {message}", flush=True)

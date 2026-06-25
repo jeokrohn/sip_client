@@ -41,6 +41,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             config_path=args.config,
             env_file=args.env_file,
             backend_name=args.backend,
+            progress_reporter=_print_progress,
         ) as lab:
             for scenario in args.scenarios:
                 await lab.run_scenario_path(scenario)
@@ -64,6 +65,15 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("scenarios", nargs="+", help="scenario YAML files")
 
     return parser
+
+
+def _print_progress(message: str) -> None:
+    """Print one scenario progress line.
+
+    :param message: Progress message from the orchestrator.
+    """
+
+    print(f"[wxcalls] {message}", flush=True)
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -28,6 +28,7 @@ class CallLab:
         backend: SipBackend | None = None,
         artifact_writer: ArtifactWriter | None = None,
         media_factory: MediaFactory | None = None,
+        progress_reporter: Callable[[str], None] | None = None,
     ) -> None:
         """Create a call lab.
 
@@ -35,15 +36,19 @@ class CallLab:
         :param backend: SIP backend. Defaults to the fake backend.
         :param artifact_writer: Artifact writer for run outputs.
         :param media_factory: Media generator.
+        :param progress_reporter: Optional callback for human-readable progress lines.
         """
 
         self.config = config
         self.backend = backend or FakeSipBackend()
         self.artifacts = artifact_writer or ArtifactWriter(config.artifacts_dir)
         self.media_factory = media_factory or MediaFactory(self.artifacts.path_for("media", "generated", ""))
+        self.progress_reporter = progress_reporter
         self.calls: dict[str, CallHandle] = {}
         self.registrations: dict[str, RegistrationResult] = {}
         self.recordings: dict[str, Path] = {}
+        self._reported_established_call_ids: set[str] = set()
+        self._reported_ended_call_ids: set[str] = set()
 
     @classmethod
     def from_config_path(
@@ -51,16 +56,22 @@ class CallLab:
         path: str | Path,
         env_file: str | Path | None = ".env",
         backend_name: str = "fake",
+        progress_reporter: Callable[[str], None] | None = None,
     ) -> CallLab:
         """Create a lab from a YAML config file.
 
         :param path: Configuration path.
         :param env_file: Optional local env file.
         :param backend_name: ``fake`` or ``pjsua2``.
+        :param progress_reporter: Optional callback for human-readable progress lines.
         :returns: New call lab.
         """
 
-        return cls(config=load_config(path, env_file=env_file), backend=make_backend(backend_name))
+        return cls(
+            config=load_config(path, env_file=env_file),
+            backend=make_backend(backend_name),
+            progress_reporter=progress_reporter,
+        )
 
     async def __aenter__(self) -> CallLab:
         pjsip_log = self.artifacts.path_for("logs", "pjsip", ".log")
@@ -180,44 +191,61 @@ class CallLab:
     async def _step_call(self, params: dict[str, Any]) -> None:
         timeout = float(params.get("timeout", 30.0))
         target_uri = self.resolve_call_target(str(params["client"]), str(params["target"]))
+        save_as = str(params.get("save_as", "call"))
+        self._progress(f"call initiated: {params['client']} -> {target_uri} ({save_as})")
         call = await self.backend.place_call(
             client_name=str(params["client"]),
             target_uri=target_uri,
             timeout=timeout,
             video=bool(params.get("video", False)),
         )
-        self.calls[str(params.get("save_as", "call"))] = call
+        self.calls[save_as] = call
         self.artifacts.record_event("call_placed", call=call.id, client=call.client_name, target=target_uri)
+        if call.state == "connected":
+            self._report_call_established(save_as, call)
 
     async def _step_expect_incoming(self, params: dict[str, Any]) -> None:
         timeout = float(params.get("timeout", 30.0))
         from_uri = params.get("from_uri")
+        save_as = str(params.get("save_as", f"{params['client']}_incoming"))
         call = await self.backend.wait_for_incoming(
             client_name=str(params["client"]),
             timeout=timeout,
             from_uri=str(from_uri) if from_uri else None,
         )
-        self.calls[str(params.get("save_as", f"{params['client']}_incoming"))] = call
+        self.calls[save_as] = call
         self.artifacts.record_event("incoming_call_seen", call=call.id, client=call.client_name)
+        self._progress(f"call received: {call.client_name} <- {call.remote_uri} ({save_as})")
 
     async def _step_answer(self, params: dict[str, Any]) -> None:
-        call = self._call(str(params["call"]))
+        call_ref = str(params["call"])
+        call = self._call(call_ref)
         await self.backend.answer(call, status_code=int(params.get("status_code", 200)))
         self.artifacts.record_event("call_answered", call=call.id)
+        if call.state == "connected":
+            self._report_call_established(call_ref, call)
 
     async def _step_reject(self, params: dict[str, Any]) -> None:
-        call = self._call(str(params["call"]))
+        call_ref = str(params["call"])
+        call = self._call(call_ref)
         await self.backend.reject(call, status_code=int(params.get("status_code", 486)))
         self.artifacts.record_event("call_rejected", call=call.id)
+        self._report_call_ended(call_ref, call)
 
     async def _step_wait_state(self, params: dict[str, Any]) -> None:
-        call = self._call(str(params["call"]))
+        call_ref = str(params["call"])
+        state = str(params["state"])
+        call = self._call(call_ref)
         await self.backend.wait_call_state(
             call,
-            state=str(params["state"]),
+            state=state,
             timeout=float(params.get("timeout", 30.0)),
         )
-        self.artifacts.record_event("call_state_seen", call=call.id, state=str(params["state"]))
+        self.artifacts.record_event("call_state_seen", call=call.id, state=state)
+        if state == "connected":
+            self._report_call_established(call_ref, call)
+        if state == "disconnected":
+            self._report_call_ended(call_ref, call)
 
     async def _step_wait_media(self, params: dict[str, Any]) -> None:
         """Wait until audio media is established for a call."""
@@ -288,9 +316,11 @@ class CallLab:
 
     async def _step_hangup(self, params: dict[str, Any]) -> None:
         for name in _as_list(params.get("calls", params.get("call"))):
-            call = self._call(str(name))
+            call_ref = str(name)
+            call = self._call(call_ref)
             await self.backend.hangup(call)
             self.artifacts.record_event("call_hung_up", call=call.id)
+            self._report_call_ended(call_ref, call)
 
     async def _step_video_smoke(self, params: dict[str, Any]) -> None:
         result = await self.backend.video_smoke(
@@ -312,6 +342,22 @@ class CallLab:
             return self.calls[name]
         except KeyError as exc:
             raise ScenarioError(f"Unknown call reference: {name}") from exc
+
+    def _progress(self, message: str) -> None:
+        if self.progress_reporter is not None:
+            self.progress_reporter(message)
+
+    def _report_call_established(self, call_ref: str, call: CallHandle) -> None:
+        if call.id in self._reported_established_call_ids:
+            return
+        self._reported_established_call_ids.add(call.id)
+        self._progress(f"call established: {call_ref} {call.client_name} <-> {call.remote_uri}")
+
+    def _report_call_ended(self, call_ref: str, call: CallHandle) -> None:
+        if call.id in self._reported_ended_call_ids:
+            return
+        self._reported_ended_call_ids.add(call.id)
+        self._progress(f"call ended: {call_ref} {call.client_name} <-> {call.remote_uri}")
 
 
 def make_backend(name: str) -> SipBackend:
@@ -335,16 +381,23 @@ async def lab_from_config(
     config_path: str | Path,
     env_file: str | Path | None = ".env",
     backend_name: str = "pjsua2",
+    progress_reporter: Callable[[str], None] | None = None,
 ) -> AsyncIterator[CallLab]:
     """Create and initialize a call lab from configuration.
 
     :param config_path: Config YAML path.
     :param env_file: Optional env file path.
     :param backend_name: Backend name.
+    :param progress_reporter: Optional callback for human-readable progress lines.
     :yields: Initialized call lab.
     """
 
-    lab = CallLab.from_config_path(config_path, env_file=env_file, backend_name=backend_name)
+    lab = CallLab.from_config_path(
+        config_path,
+        env_file=env_file,
+        backend_name=backend_name,
+        progress_reporter=progress_reporter,
+    )
     async with lab:
         yield lab
 

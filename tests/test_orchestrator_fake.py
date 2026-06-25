@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -110,6 +111,35 @@ def test_fake_backend_runs_attended_transfer(tmp_path: Path) -> None:
     assert lab.calls["primary"].state == "transferred"
 
 
+def test_progress_reporter_receives_call_lifecycle_messages(tmp_path: Path) -> None:
+    messages: list[str] = []
+    lab = _lab(tmp_path, progress_reporter=messages.append)
+    scenario = parse_scenario(
+        {
+            "name": "progress",
+            "steps": [
+                {"action": "register", "clients": ["alice"]},
+                {"action": "call", "client": "alice", "target": "webex_user", "save_as": "outbound"},
+                {"action": "wait_state", "call": "outbound", "state": "connected"},
+                {"action": "hangup", "call": "outbound"},
+            ],
+        }
+    )
+
+    async def run() -> None:
+        async with lab:
+            await lab.run_scenario(scenario)
+
+    import asyncio
+
+    asyncio.run(run())
+    assert messages == [
+        "call initiated: alice -> sip:webex@example.invalid (outbound)",
+        "call established: outbound alice <-> sip:webex@example.invalid",
+        "call ended: outbound alice <-> sip:webex@example.invalid",
+    ]
+
+
 def test_fake_backend_video_smoke_skips_for_opaque_target(tmp_path: Path) -> None:
     lab = _lab(tmp_path)
     scenario = parse_scenario(
@@ -171,7 +201,7 @@ def test_numeric_extension_targets_resolve_against_calling_client_registrar(tmp_
     assert lab.resolve_call_target("alice", "sip:7109@example.invalid") == "sip:7109@example.invalid"
 
 
-def _lab(tmp_path: Path) -> CallLab:
+def _lab(tmp_path: Path, progress_reporter: Callable[[str], None] | None = None) -> CallLab:
     config = LabConfig(
         clients=(
             SipClientConfig(
@@ -219,4 +249,5 @@ def _lab(tmp_path: Path) -> CallLab:
         backend=FakeSipBackend(),
         artifact_writer=ArtifactWriter(config.artifacts_dir, run_id="test-run"),
         media_factory=MarkerMediaFactory(tmp_path / "media"),
+        progress_reporter=progress_reporter,
     )
