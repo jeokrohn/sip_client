@@ -52,6 +52,25 @@ pytest --wxcalls-config config.local.yml --wxcalls-backend pjsua2 --scenario sce
 
 Use `--wxcalls-backend fake` for local parser/orchestrator smoke runs without Webex credentials.
 
+## Call scenarios
+
+Use `wait_state` to assert call signaling state and `wait_media` to assert that audio media is active before playback:
+
+```yaml
+steps:
+  - action: call
+    client: device1
+    target: "7109"
+    save_as: outbound
+  - action: wait_state
+    call: outbound
+    state: connected
+  - action: wait_media
+    call: outbound
+```
+
+Numeric targets such as `"7109"` are treated as extensions and dialed against the calling client's registrar host.
+
 ## Registration watch scenarios
 
 The `register` step can keep one or more clients registered before moving to the next step.

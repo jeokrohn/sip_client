@@ -34,6 +34,7 @@ def test_fake_backend_runs_audio_marker_scenario(tmp_path: Path, use_hold_resume
         {"action": "expect_incoming", "client": "bob", "save_as": "bob_incoming"},
         {"action": "answer", "call": "bob_incoming"},
         {"action": "wait_state", "call": "alice_to_bob", "state": "connected"},
+        {"action": "wait_media", "call": "alice_to_bob"},
     ]
     if use_hold_resume:
         scenario_steps.extend(
@@ -160,6 +161,13 @@ def test_register_step_can_stay_registered_for_explicit_duration(tmp_path: Path)
         and event["refreshes_observed"] == 1
         for event in lab.artifacts.timeline
     )
+
+
+def test_numeric_extension_targets_resolve_against_calling_client_registrar(tmp_path: Path) -> None:
+    lab = _lab(tmp_path)
+
+    assert lab.resolve_call_target("alice", "7109") == "sip:7109@registrar.example.invalid"
+    assert lab.resolve_call_target("alice", "sip:7109@example.invalid") == "sip:7109@example.invalid"
 
 
 def _lab(tmp_path: Path) -> CallLab:

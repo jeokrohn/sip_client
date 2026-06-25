@@ -31,6 +31,7 @@ class ScenarioStep:
         "answer": ("call",),
         "reject": ("call",),
         "wait_state": ("call", "state"),
+        "wait_media": ("call",),
         "play_tts": ("call", "text"),
         "play_wav": ("call", "path"),
         "record": ("call",),

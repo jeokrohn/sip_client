@@ -14,6 +14,7 @@ from wxcalls.backends.fake import FakeSipBackend
 from wxcalls.backends.pjsua2 import Pjsua2SipBackend
 from wxcalls.config import LabConfig, load_config
 from wxcalls.exceptions import BackendError, ScenarioError
+from wxcalls.exceptions import TimeoutError as WxTimeoutError
 from wxcalls.media import MediaFactory, detect_marker
 from wxcalls.scenario import Scenario, ScenarioStep, load_scenario
 
@@ -81,6 +82,23 @@ class CallLab:
         """Return a configured target by name."""
 
         return self.config.target(name)
+
+    def resolve_call_target(self, client_name: str, target: str) -> str:
+        """Resolve a scenario call target into a backend dial string.
+
+        :param client_name: Logical client placing the call.
+        :param target: Client name, target name, literal URI, or numeric extension.
+        :returns: Dialable SIP target for the backend.
+        """
+
+        resolved = self.config.resolve_target_uri(target)
+        if resolved != target or ":" in resolved or "@" in resolved or not resolved.isdecimal():
+            return resolved
+
+        registrar_host = _sip_host(self.config.client(client_name).registrar_uri)
+        if registrar_host is None:
+            return resolved
+        return f"sip:{resolved}@{registrar_host}"
 
     async def run_scenario_path(self, path: str | Path) -> None:
         """Load and run a scenario file.
@@ -161,7 +179,7 @@ class CallLab:
 
     async def _step_call(self, params: dict[str, Any]) -> None:
         timeout = float(params.get("timeout", 30.0))
-        target_uri = self.config.resolve_target_uri(str(params["target"]))
+        target_uri = self.resolve_call_target(str(params["client"]), str(params["target"]))
         call = await self.backend.place_call(
             client_name=str(params["client"]),
             target_uri=target_uri,
@@ -200,6 +218,18 @@ class CallLab:
             timeout=float(params.get("timeout", 30.0)),
         )
         self.artifacts.record_event("call_state_seen", call=call.id, state=str(params["state"]))
+
+    async def _step_wait_media(self, params: dict[str, Any]) -> None:
+        """Wait until audio media is established for a call."""
+
+        call = self._call(str(params["call"]))
+        timeout = float(params.get("timeout", 30.0))
+        deadline = asyncio.get_running_loop().time() + timeout
+        while not call.media_active:
+            if asyncio.get_running_loop().time() >= deadline:
+                raise WxTimeoutError(f"Timed out waiting for audio media on call {call.id}")
+            await asyncio.sleep(0.01)
+        self.artifacts.record_event("call_media_seen", call=call.id, media="audio")
 
     async def _step_play_tts(self, params: dict[str, Any]) -> None:
         call = self._call(str(params["call"]))
@@ -329,3 +359,15 @@ def _as_list(value: Any) -> list[Any]:
 
 def _should_stay_registered(params: dict[str, Any]) -> bool:
     return bool(params.get("stay_registered", False)) or "stay_registered_for" in params
+
+
+def _sip_host(uri: str) -> str | None:
+    """Extract a SIP host from a registrar URI.
+
+    :param uri: SIP or SIPS URI.
+    :returns: Host portion, or ``None`` when unavailable.
+    """
+
+    remainder = uri.split(":", 1)[1] if ":" in uri else uri
+    host = remainder.split("@", 1)[-1].split(";", 1)[0].split("?", 1)[0].strip()
+    return host or None
