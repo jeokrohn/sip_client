@@ -9,6 +9,36 @@ from typing import Protocol
 from wxcalls.config import LabConfig, SipClientConfig, SipCredentials
 
 
+@dataclass(frozen=True)
+class RegistrationResult:
+    """Result of a successful SIP registration.
+
+    :param client_name: Registered logical client name.
+    :param expires: Accepted registration expiration interval in seconds, if known.
+    :param metadata: Backend-specific registration details for diagnostics.
+    """
+
+    client_name: str
+    expires: int | None
+    metadata: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RegistrationWaitResult:
+    """Result of keeping a SIP client registered for a requested duration.
+
+    :param client_name: Registered logical client name.
+    :param seconds: Requested wait duration in seconds.
+    :param refreshes_observed: Successful re-registration refreshes observed during the wait.
+    :param last_expires: Last observed registration expiration interval in seconds, if known.
+    """
+
+    client_name: str
+    seconds: float
+    refreshes_observed: int
+    last_expires: int | None
+
+
 @dataclass
 class CallHandle:
     """Backend-neutral reference to a call leg.
@@ -59,8 +89,17 @@ class SipBackend(Protocol):
         client: SipClientConfig,
         credentials: SipCredentials,
         timeout: float = 30.0,
-    ) -> None:
+    ) -> RegistrationResult:
         """Register one SIP client."""
+
+    async def stay_registered(
+        self,
+        client_name: str,
+        seconds: float,
+        require_reregistration: bool = False,
+        min_reregistrations: int = 1,
+    ) -> RegistrationWaitResult:
+        """Keep a SIP client registered before the next scenario step."""
 
     async def place_call(
         self,

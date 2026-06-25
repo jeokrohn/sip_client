@@ -29,9 +29,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _cmd_preflight(args: argparse.Namespace) -> int:
-    checks = run_preflight(
-        Path(args.config), env_file=Path(args.env_file) if args.env_file else None
-    )
+    checks = run_preflight(Path(args.config), env_file=Path(args.env_file) if args.env_file else None)
     for check in checks:
         print(f"{check.status.upper():5} {check.name}: {check.detail}")
     return 1 if has_failures(checks) else 0
@@ -62,9 +60,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run = subparsers.add_parser("run", help="run scenario YAML files")
     run.add_argument("-c", "--config", required=True, help="framework YAML config path")
     run.add_argument("--env-file", default=".env", help="local env file path")
-    run.add_argument(
-        "--backend", choices=["fake", "pjsua2"], default="pjsua2", help="backend to use"
-    )
+    run.add_argument("--backend", choices=["fake", "pjsua2"], default="pjsua2", help="backend to use")
     run.add_argument("scenarios", nargs="+", help="scenario YAML files")
 
     return parser

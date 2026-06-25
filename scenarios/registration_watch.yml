@@ -1,0 +1,7 @@
+name: registration-watch
+steps:
+  - action: register
+    client: device1
+    timeout: 30
+    stay_registered: true
+

@@ -62,17 +62,11 @@ class ScenarioStep:
         required = cls.REQUIRED_BY_ACTION.get(action)
         if required is None:
             supported = ", ".join(sorted(cls.REQUIRED_BY_ACTION))
-            raise ScenarioError(
-                f"Step {index} has unsupported action {action!r}; supported: {supported}"
-            )
+            raise ScenarioError(f"Step {index} has unsupported action {action!r}; supported: {supported}")
         params = {str(key): value for key, value in raw.items() if key not in {"action", "type"}}
-        missing = [
-            field for field in required if field not in params or params[field] in (None, "")
-        ]
+        missing = [field for field in required if field not in params or params[field] in (None, "")]
         if missing:
-            raise ScenarioError(
-                f"Step {index} action {action!r} missing required field(s): {', '.join(missing)}"
-            )
+            raise ScenarioError(f"Step {index} action {action!r} missing required field(s): {', '.join(missing)}")
         _validate_common_fields(action, params, index)
         return cls(action=action, params=params, index=index)
 
@@ -123,9 +117,7 @@ def parse_scenario(raw: Any, source: Path | None = None) -> Scenario:
     steps_raw = raw.get("steps")
     if not isinstance(steps_raw, list) or not steps_raw:
         raise ScenarioError("Scenario requires a non-empty steps list")
-    steps = tuple(
-        ScenarioStep.from_raw(step, index) for index, step in enumerate(steps_raw, start=1)
-    )
+    steps = tuple(ScenarioStep.from_raw(step, index) for index, step in enumerate(steps_raw, start=1))
     name = str(raw.get("name") or (source.stem if source else "scenario"))
     return Scenario(name=name, steps=steps, source=source)
 
@@ -139,5 +131,17 @@ def _validate_common_fields(action: str, params: dict[str, Any], index: int) -> 
         raise ScenarioError(f"Step {index} action {action!r} seconds must be a positive number")
     if action == "register" and "client" not in params and "clients" not in params:
         raise ScenarioError(f"Step {index} action 'register' requires client or clients")
+    stay_registered_for = params.get("stay_registered_for")
+    if stay_registered_for is not None and (
+        not isinstance(stay_registered_for, int | float) or stay_registered_for <= 0
+    ):
+        raise ScenarioError(f"Step {index} action {action!r} stay_registered_for must be a positive number")
+    if "stay_registered" in params and not isinstance(params["stay_registered"], bool):
+        raise ScenarioError(f"Step {index} action {action!r} stay_registered must be boolean")
+    if "require_reregistration" in params and not isinstance(params["require_reregistration"], bool):
+        raise ScenarioError(f"Step {index} action {action!r} require_reregistration must be boolean")
+    min_reregistrations = params.get("min_reregistrations")
+    if min_reregistrations is not None and (not isinstance(min_reregistrations, int) or min_reregistrations <= 0):
+        raise ScenarioError(f"Step {index} action {action!r} min_reregistrations must be a positive integer")
     if action == "hangup" and "call" not in params and "calls" not in params:
         raise ScenarioError(f"Step {index} action 'hangup' requires call or calls")

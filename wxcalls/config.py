@@ -249,9 +249,7 @@ def _parse_target(raw: Any) -> TargetConfig:
         raise ConfigError("Each target entry must be a mapping")
     if not raw.get("name") or not raw.get("uri"):
         raise ConfigError("Target entries require name and uri")
-    return TargetConfig(
-        name=str(raw["name"]), uri=str(raw["uri"]), kind=str(raw.get("kind", "sip"))
-    )
+    return TargetConfig(name=str(raw["name"]), uri=str(raw["uri"]), kind=str(raw.get("kind", "sip")))
 
 
 def _required_list(raw: dict[str, Any], key: str) -> list[Any]:

@@ -52,6 +52,36 @@ pytest --wxcalls-config config.local.yml --wxcalls-backend pjsua2 --scenario sce
 
 Use `--wxcalls-backend fake` for local parser/orchestrator smoke runs without Webex credentials.
 
+## Registration watch scenarios
+
+The `register` step can keep one or more clients registered before moving to the next step.
+
+```yaml
+steps:
+  - action: register
+    client: alice
+    timeout: 30
+    stay_registered: true
+```
+
+With `stay_registered: true`, the framework waits for twice the accepted `expires` interval
+reported by the successful `200 REGISTER` response and requires at least one successful
+re-registration refresh before the step completes.
+
+Use an explicit duration when you want a shorter or longer soak:
+
+```yaml
+steps:
+  - action: register
+    clients: [alice, bob]
+    stay_registered_for: 120
+    require_reregistration: true
+    min_reregistrations: 1
+```
+
+`stay_registered_for` is in seconds. For explicit durations, `require_reregistration` defaults to
+`false`; set it to `true` when the scenario should fail unless a refresh is observed.
+
 ## Notes
 
 This is an internal prototype. PJSIP/PJSUA2 build and licensing requirements should be reviewed

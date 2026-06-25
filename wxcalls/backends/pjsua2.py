@@ -8,7 +8,12 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from wxcalls.backends.base import CallHandle, VideoSmokeResult
+from wxcalls.backends.base import (
+    CallHandle,
+    RegistrationResult,
+    RegistrationWaitResult,
+    VideoSmokeResult,
+)
 from wxcalls.config import LabConfig, SipClientConfig, SipCredentials
 from wxcalls.exceptions import BackendError, UnsupportedFeature
 from wxcalls.exceptions import TimeoutError as WxTimeoutError
@@ -34,8 +39,7 @@ class Pjsua2SipBackend:
             import pjsua2 as pj  # type: ignore[import-not-found]
         except ImportError as exc:
             raise BackendError(
-                "pjsua2 is not importable. Build/install PJSIP PJSUA2 Python bindings "
-                "before using the live backend."
+                "pjsua2 is not importable. Build/install PJSIP PJSUA2 Python bindings before using the live backend."
             ) from exc
 
         self.pj = pj
@@ -58,9 +62,7 @@ class Pjsua2SipBackend:
 
         transport = self._transport_type(config.clients[0].transport)
         transport_cfg = pj.TransportConfig()
-        first_port = next(
-            (client.local_port for client in config.clients if client.local_port), None
-        )
+        first_port = next((client.local_port for client in config.clients if client.local_port), None)
         if first_port:
             transport_cfg.port = int(first_port)
         self.endpoint.transportCreate(transport, transport_cfg)
@@ -86,7 +88,7 @@ class Pjsua2SipBackend:
         client: SipClientConfig,
         credentials: SipCredentials,
         timeout: float = 30.0,
-    ) -> None:
+    ) -> RegistrationResult:
         """Create and register a PJSUA2 account."""
 
         self._require_ready()
@@ -104,7 +106,43 @@ class Pjsua2SipBackend:
         account = _create_account_adapter(self, client.name)
         account.create(acc_cfg)
         self.accounts[client.name] = account
-        await account.wait_registered(timeout)
+        return await account.wait_registered(timeout)
+
+    async def stay_registered(
+        self,
+        client_name: str,
+        seconds: float,
+        require_reregistration: bool = False,
+        min_reregistrations: int = 1,
+    ) -> RegistrationWaitResult:
+        """Keep an account alive and count successful registration refreshes."""
+
+        account = self._account(client_name)
+        baseline_count = account.successful_registration_count
+        deadline = asyncio.get_running_loop().time() + seconds
+
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                break
+            try:
+                await asyncio.wait_for(account.registration_events.get(), timeout=remaining)
+            except TimeoutError:
+                break
+
+        refreshes_observed = max(0, account.successful_registration_count - baseline_count)
+        if require_reregistration and refreshes_observed < min_reregistrations:
+            raise WxTimeoutError(
+                f"Observed {refreshes_observed} registration refresh(es) for {client_name}; "
+                f"expected at least {min_reregistrations}"
+            )
+        last_registration = account.last_registration
+        return RegistrationWaitResult(
+            client_name=client_name,
+            seconds=seconds,
+            refreshes_observed=refreshes_observed,
+            last_expires=last_registration.expires if last_registration else None,
+        )
 
     async def place_call(
         self,
@@ -143,9 +181,7 @@ class Pjsua2SipBackend:
         except TimeoutError as exc:
             raise WxTimeoutError(f"Timed out waiting for incoming call on {client_name}") from exc
         if from_uri and handle.remote_uri != from_uri:
-            raise BackendError(
-                f"Incoming call on {client_name} came from {handle.remote_uri}, expected {from_uri}"
-            )
+            raise BackendError(f"Incoming call on {client_name} came from {handle.remote_uri}, expected {from_uri}")
         return handle
 
     async def answer(self, call: CallHandle, status_code: int = 200) -> None:
@@ -323,6 +359,9 @@ def _create_account_adapter(backend: Pjsua2SipBackend, client_name: str) -> Any:
             self.backend = backend
             self.client_name = client_name
             self.registered = asyncio.Event()
+            self.registration_events: asyncio.Queue[RegistrationResult] = asyncio.Queue()
+            self.last_registration: RegistrationResult | None = None
+            self.successful_registration_count = 0
             self.incoming: asyncio.Queue[CallHandle] = asyncio.Queue()
 
         def onRegState(self, prm: Any) -> None:  # noqa: N802 - PJSUA2 callback name
@@ -332,10 +371,20 @@ def _create_account_adapter(backend: Pjsua2SipBackend, client_name: str) -> Any:
                 info = self.getInfo()
                 is_active = bool(info.regIsActive)
                 code = int(getattr(prm, "code", 0))
+                expiration = int(getattr(prm, "expiration", 0) or 0)
             except Exception:
                 is_active = False
                 code = 0
+                expiration = 0
             if is_active and 200 <= code < 300:
+                result = RegistrationResult(
+                    client_name=self.client_name,
+                    expires=expiration or None,
+                    metadata={"code": code, "reason": str(getattr(prm, "reason", ""))},
+                )
+                self.last_registration = result
+                self.successful_registration_count += 1
+                self.backend.loop.call_soon_threadsafe(self.registration_events.put_nowait, result)
                 self.backend.loop.call_soon_threadsafe(self.registered.set)
 
         def onIncomingCall(self, prm: Any) -> None:  # noqa: N802 - PJSUA2 callback name
@@ -355,11 +404,9 @@ def _create_account_adapter(backend: Pjsua2SipBackend, client_name: str) -> Any:
             """Wait until account registration succeeds."""
 
             try:
-                await asyncio.wait_for(self.registered.wait(), timeout=timeout)
+                return await asyncio.wait_for(self.registration_events.get(), timeout=timeout)
             except TimeoutError as exc:
-                raise WxTimeoutError(
-                    f"Timed out registering SIP client {self.client_name}"
-                ) from exc
+                raise WxTimeoutError(f"Timed out registering SIP client {self.client_name}") from exc
 
     return AccountAdapter()
 

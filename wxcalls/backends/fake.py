@@ -8,7 +8,12 @@ import shutil
 from pathlib import Path
 from uuid import uuid4
 
-from wxcalls.backends.base import CallHandle, VideoSmokeResult
+from wxcalls.backends.base import (
+    CallHandle,
+    RegistrationResult,
+    RegistrationWaitResult,
+    VideoSmokeResult,
+)
 from wxcalls.config import LabConfig, SipClientConfig, SipCredentials
 from wxcalls.exceptions import BackendError, TimeoutError
 from wxcalls.media import create_silence_wav
@@ -24,6 +29,7 @@ class FakeSipBackend:
         self.linked_calls: dict[str, str] = {}
         self.calls: dict[str, CallHandle] = {}
         self.last_played: dict[str, Path] = {}
+        self.registration_results: dict[str, RegistrationResult] = {}
 
     async def initialize(self, config: LabConfig, pjsip_log_path: Path | None = None) -> None:
         """Initialize fake state for the configured clients."""
@@ -38,18 +44,46 @@ class FakeSipBackend:
         self.calls.clear()
         self.linked_calls.clear()
         self.last_played.clear()
+        self.registration_results.clear()
 
     async def register_client(
         self,
         client: SipClientConfig,
         credentials: SipCredentials,
         timeout: float = 30.0,
-    ) -> None:
+    ) -> RegistrationResult:
         """Mark a client as registered if credentials are non-empty."""
 
         if not credentials.username or not credentials.password:
             raise BackendError(f"Fake registration failed for {client.name}: empty credentials")
         self.registered.add(client.name)
+        result = RegistrationResult(
+            client_name=client.name,
+            expires=30,
+            metadata={"backend": "fake"},
+        )
+        self.registration_results[client.name] = result
+        return result
+
+    async def stay_registered(
+        self,
+        client_name: str,
+        seconds: float,
+        require_reregistration: bool = False,
+        min_reregistrations: int = 1,
+    ) -> RegistrationWaitResult:
+        """Simulate staying registered without making dry-run scenarios slow."""
+
+        self._require_registered(client_name)
+        await asyncio.sleep(min(seconds, 0.05))
+        refreshes_observed = min_reregistrations if require_reregistration else 0
+        result = self.registration_results.get(client_name)
+        return RegistrationWaitResult(
+            client_name=client_name,
+            seconds=seconds,
+            refreshes_observed=refreshes_observed,
+            last_expires=result.expires if result else None,
+        )
 
     async def place_call(
         self,
@@ -102,9 +136,7 @@ class FakeSipBackend:
         except builtins.TimeoutError as exc:
             raise TimeoutError(f"Timed out waiting for incoming call on {client_name}") from exc
         if from_uri and call.remote_uri != from_uri:
-            raise BackendError(
-                f"Incoming call on {client_name} came from {call.remote_uri}, expected {from_uri}"
-            )
+            raise BackendError(f"Incoming call on {client_name} came from {call.remote_uri}, expected {from_uri}")
         return call
 
     async def answer(self, call: CallHandle, status_code: int = 200) -> None:

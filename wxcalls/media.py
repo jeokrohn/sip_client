@@ -44,9 +44,7 @@ class MediaFactory:
         self.sample_rate = sample_rate
         self.work_dir.mkdir(parents=True, exist_ok=True)
 
-    def prepare_tts(
-        self, text: str, marker: str | None = None, voice: str | None = None
-    ) -> MediaAsset:
+    def prepare_tts(self, text: str, marker: str | None = None, voice: str | None = None) -> MediaAsset:
         """Generate runtime TTS audio and optionally append a marker tone.
 
         :param text: Text to synthesize with macOS ``say``.
@@ -152,15 +150,11 @@ def generate_marker_tone(
         wav.setsampwidth(DEFAULT_SAMPLE_WIDTH)
         wav.setframerate(sample_rate)
         for index in range(frame_count):
-            sample = int(
-                32767 * amplitude * math.sin(2 * math.pi * frequency * index / sample_rate)
-            )
+            sample = int(32767 * amplitude * math.sin(2 * math.pi * frequency * index / sample_rate))
             wav.writeframesraw(struct.pack("<h", sample))
 
 
-def create_silence_wav(
-    output_path: Path, seconds: float, sample_rate: int = DEFAULT_SAMPLE_RATE
-) -> None:
+def create_silence_wav(output_path: Path, seconds: float, sample_rate: int = DEFAULT_SAMPLE_RATE) -> None:
     """Create a mono PCM silence WAV file.
 
     :param output_path: Destination WAV path.

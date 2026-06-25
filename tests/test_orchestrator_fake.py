@@ -17,9 +17,7 @@ class MarkerMediaFactory:
         self.work_dir = work_dir
         self.work_dir.mkdir(parents=True, exist_ok=True)
 
-    def prepare_tts(
-        self, text: str, marker: str | None = None, voice: str | None = None
-    ) -> MediaAsset:
+    def prepare_tts(self, text: str, marker: str | None = None, voice: str | None = None) -> MediaAsset:
         path = self.work_dir / "tts.wav"
         generate_marker_tone(marker or "default-marker", path)
         return MediaAsset(path=path, marker=marker)
@@ -130,8 +128,37 @@ def test_fake_backend_video_smoke_skips_for_opaque_target(tmp_path: Path) -> Non
     import asyncio
 
     asyncio.run(run())
+    assert any(event["event"] == "video_smoke" and event["skipped"] for event in lab.artifacts.timeline)
+
+
+def test_register_step_can_stay_registered_for_explicit_duration(tmp_path: Path) -> None:
+    lab = _lab(tmp_path)
+    scenario = parse_scenario(
+        {
+            "name": "registration-watch",
+            "steps": [
+                {
+                    "action": "register",
+                    "client": "alice",
+                    "stay_registered_for": 0.01,
+                    "require_reregistration": True,
+                }
+            ],
+        }
+    )
+
+    async def run() -> None:
+        async with lab:
+            await lab.run_scenario(scenario)
+
+    import asyncio
+
+    asyncio.run(run())
     assert any(
-        event["event"] == "video_smoke" and event["skipped"] for event in lab.artifacts.timeline
+        event["event"] == "registration_wait_finished"
+        and event["client"] == "alice"
+        and event["refreshes_observed"] == 1
+        for event in lab.artifacts.timeline
     )
 
 

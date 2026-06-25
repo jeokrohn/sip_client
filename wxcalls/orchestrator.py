@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 from wxcalls.artifacts import ArtifactWriter
-from wxcalls.backends.base import CallHandle, SipBackend
+from wxcalls.backends.base import CallHandle, RegistrationResult, SipBackend
 from wxcalls.backends.fake import FakeSipBackend
 from wxcalls.backends.pjsua2 import Pjsua2SipBackend
 from wxcalls.config import LabConfig, load_config
@@ -38,10 +39,9 @@ class CallLab:
         self.config = config
         self.backend = backend or FakeSipBackend()
         self.artifacts = artifact_writer or ArtifactWriter(config.artifacts_dir)
-        self.media_factory = media_factory or MediaFactory(
-            self.artifacts.path_for("media", "generated", "")
-        )
+        self.media_factory = media_factory or MediaFactory(self.artifacts.path_for("media", "generated", ""))
         self.calls: dict[str, CallHandle] = {}
+        self.registrations: dict[str, RegistrationResult] = {}
         self.recordings: dict[str, Path] = {}
 
     @classmethod
@@ -96,9 +96,7 @@ class CallLab:
         :param scenario: Scenario to execute.
         """
 
-        self.artifacts.record_event(
-            "scenario_started", name=scenario.name, source=str(scenario.source or "")
-        )
+        self.artifacts.record_event("scenario_started", name=scenario.name, source=str(scenario.source or ""))
         for step in scenario.steps:
             self.artifacts.record_event("step_started", index=step.index, action=step.action)
             await self._run_step(step)
@@ -114,12 +112,52 @@ class CallLab:
     async def _step_register(self, params: dict[str, Any]) -> None:
         clients = _as_list(params.get("clients", params.get("client")))
         timeout = float(params.get("timeout", 30.0))
+        registered: list[RegistrationResult] = []
         for client_name in clients:
             client = self.config.client(str(client_name))
-            await self.backend.register_client(
-                client, client.credentials(self.config.env), timeout=timeout
-            )
-            self.artifacts.record_event("client_registered", client=client.name)
+            result = await self.backend.register_client(client, client.credentials(self.config.env), timeout=timeout)
+            self.registrations[client.name] = result
+            registered.append(result)
+            self.artifacts.record_event("client_registered", client=client.name, expires=result.expires)
+
+        if _should_stay_registered(params):
+            await asyncio.gather(*(self._stay_registered(result, params) for result in registered))
+
+    async def _stay_registered(self, result: RegistrationResult, params: dict[str, Any]) -> None:
+        explicit_seconds = params.get("stay_registered_for")
+        if explicit_seconds is None:
+            if result.expires is None:
+                raise ScenarioError(
+                    f"Cannot derive stay_registered duration for {result.client_name}; "
+                    "registration response did not include an expiration interval"
+                )
+            seconds = float(result.expires * 2)
+            require_reregistration = bool(params.get("require_reregistration", True))
+        else:
+            seconds = float(explicit_seconds)
+            require_reregistration = bool(params.get("require_reregistration", False))
+
+        min_reregistrations = int(params.get("min_reregistrations", 1))
+        self.artifacts.record_event(
+            "registration_wait_started",
+            client=result.client_name,
+            seconds=seconds,
+            require_reregistration=require_reregistration,
+            min_reregistrations=min_reregistrations,
+        )
+        wait_result = await self.backend.stay_registered(
+            result.client_name,
+            seconds=seconds,
+            require_reregistration=require_reregistration,
+            min_reregistrations=min_reregistrations,
+        )
+        self.artifacts.record_event(
+            "registration_wait_finished",
+            client=wait_result.client_name,
+            seconds=wait_result.seconds,
+            refreshes_observed=wait_result.refreshes_observed,
+            last_expires=wait_result.last_expires,
+        )
 
     async def _step_call(self, params: dict[str, Any]) -> None:
         timeout = float(params.get("timeout", 30.0))
@@ -131,9 +169,7 @@ class CallLab:
             video=bool(params.get("video", False)),
         )
         self.calls[str(params.get("save_as", "call"))] = call
-        self.artifacts.record_event(
-            "call_placed", call=call.id, client=call.client_name, target=target_uri
-        )
+        self.artifacts.record_event("call_placed", call=call.id, client=call.client_name, target=target_uri)
 
     async def _step_expect_incoming(self, params: dict[str, Any]) -> None:
         timeout = float(params.get("timeout", 30.0))
@@ -173,9 +209,7 @@ class CallLab:
             voice=str(params["voice"]) if params.get("voice") else None,
         )
         await self.backend.play_wav(call, asset.path)
-        self.artifacts.record_event(
-            "tts_played", call=call.id, path=str(asset.path), marker=asset.marker
-        )
+        self.artifacts.record_event("tts_played", call=call.id, path=str(asset.path), marker=asset.marker)
 
     async def _step_play_wav(self, params: dict[str, Any]) -> None:
         call = self._call(str(params["call"]))
@@ -184,9 +218,7 @@ class CallLab:
             marker=str(params["marker"]) if params.get("marker") else None,
         )
         await self.backend.play_wav(call, asset.path)
-        self.artifacts.record_event(
-            "wav_played", call=call.id, path=str(asset.path), marker=asset.marker
-        )
+        self.artifacts.record_event("wav_played", call=call.id, path=str(asset.path), marker=asset.marker)
 
     async def _step_record(self, params: dict[str, Any]) -> None:
         call = self._call(str(params["call"]))
@@ -293,3 +325,7 @@ def _as_list(value: Any) -> list[Any]:
     if value is None:
         return []
     return [value]
+
+
+def _should_stay_registered(params: dict[str, Any]) -> bool:
+    return bool(params.get("stay_registered", False)) or "stay_registered_for" in params
