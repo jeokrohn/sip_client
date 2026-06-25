@@ -1,0 +1,9 @@
+name: video-smoke
+steps:
+  - action: register
+    clients: [alice]
+  - action: video_smoke
+    client: alice
+    target: webex_user
+    timeout: 20
+

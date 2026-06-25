@@ -1,0 +1,23 @@
+artifacts_dir: artifacts
+dns_nameservers: []
+clients:
+  - name: alice
+    id_uri: "sip:alice@example.webexcalling.invalid"
+    registrar_uri: "sip:example.webexcalling.invalid"
+    proxy_uri: "sip:example.webexcalling.invalid;transport=tls"
+    username_env: WX_SIP_ALICE_USER
+    password_env: WX_SIP_ALICE_PASSWORD
+    transport: tls
+    enable_video: true
+  - name: bob
+    id_uri: "sip:bob@example.webexcalling.invalid"
+    registrar_uri: "sip:example.webexcalling.invalid"
+    proxy_uri: "sip:example.webexcalling.invalid;transport=tls"
+    username_env: WX_SIP_BOB_USER
+    password_env: WX_SIP_BOB_PASSWORD
+    transport: tls
+    enable_video: true
+targets:
+  - name: webex_user
+    uri: "sip:someone@example.com"
+    kind: webex

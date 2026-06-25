@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "wxcalls"
+version = "0.1.0"
+description = "Python scenario-test framework prototype for Webex Calling generic SIP phones."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "Internal" }]
+dependencies = [
+    "PyYAML>=6.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+wxcalls = "wxcalls.cli:main"
+
+[project.entry-points.pytest11]
+wxcalls = "wxcalls.pytest_plugin"
+
+[tool.hatch.build.targets.wheel]
+packages = ["wxcalls"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+

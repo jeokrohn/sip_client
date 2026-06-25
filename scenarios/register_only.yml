@@ -1,0 +1,5 @@
+name: registration-smoke
+steps:
+  - action: register
+    client: device1
+    timeout: 30

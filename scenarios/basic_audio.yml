@@ -1,0 +1,30 @@
+name: basic-audio-marker
+steps:
+  - action: register
+    clients: [alice, bob]
+  - action: call
+    client: alice
+    target: bob
+    save_as: alice_to_bob
+  - action: expect_incoming
+    client: bob
+    save_as: bob_incoming
+  - action: answer
+    call: bob_incoming
+  - action: wait_state
+    call: alice_to_bob
+    state: connected
+  - action: play_tts
+    call: alice_to_bob
+    text: "Webex Calling test marker."
+    marker: marker-basic-audio
+  - action: record
+    call: bob_incoming
+    seconds: 1.0
+    save_as: bob_recording
+  - action: assert_marker
+    recording: bob_recording
+    marker: marker-basic-audio
+  - action: hangup
+    calls: [alice_to_bob, bob_incoming]
+
