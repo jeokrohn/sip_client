@@ -1,6 +1,6 @@
 artifacts_dir: artifacts
-dns_nameservers:
-  - "144.254.71.184"
+#dns_nameservers:
+#  - "144.254.71.184"
 clients:
   - name: device1
     id_uri: "sip:lkulf5xjrn_AFFEAFFE0001@90236926.us10.bcld.webex.com"

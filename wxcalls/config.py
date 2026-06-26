@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import re
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -208,7 +210,7 @@ def load_config(path: str | Path, env_file: str | Path | None = ".env") -> LabCo
     clients = tuple(_parse_client(item) for item in _required_list(raw, "clients"))
     targets = tuple(_parse_target(item) for item in raw.get("targets", []) or [])
     artifacts_dir = Path(str(raw.get("artifacts_dir", "artifacts")))
-    dns_nameservers = _optional_string_list(raw, "dns_nameservers")
+    dns_nameservers = _optional_string_list(raw, "dns_nameservers") or get_dns_from_scutil()
     _ensure_unique("client", [client.name for client in clients])
     _ensure_unique("target", [target.name for target in targets])
 
@@ -219,6 +221,22 @@ def load_config(path: str | Path, env_file: str | Path | None = ".env") -> LabCo
         dns_nameservers=dns_nameservers,
         env=env,
     )
+
+
+def get_dns_from_scutil() -> tuple[str, ...]:
+    """Return system DNS nameservers reported by ``scutil --dns``.
+
+    :returns: Deduplicated nameservers in system resolver order, or an empty
+        tuple when ``scutil`` is unavailable.
+    """
+
+    try:
+        result = subprocess.run(["scutil", "--dns"], capture_output=True, text=True)
+    except OSError:
+        return ()
+
+    servers = re.findall(r"nameserver\[\d+\]\s*:\s*(\S+)", result.stdout)
+    return tuple(dict.fromkeys(servers))
 
 
 def _parse_client(raw: Any) -> SipClientConfig:

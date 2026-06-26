@@ -26,7 +26,8 @@ PJSUA2 is a native dependency and is not declared as a PyPI dependency. The fram
 Copy `config.example.yml` to a local config file and create a local `.env` file containing the
 SIP credential values referenced by the config.
 For Webex outbound proxies that publish only SIP SRV records, set `dns_nameservers` and use a
-`sips:` proxy URI so PJSIP can resolve `_sips._tcp` targets.
+`sips:` proxy URI so PJSIP can resolve `_sips._tcp` targets. If `dns_nameservers` is omitted or
+empty on macOS, `wxcalls` falls back to the nameservers reported by `scutil --dns`.
 
 ```bash
 cp config.example.yml config.local.yml
