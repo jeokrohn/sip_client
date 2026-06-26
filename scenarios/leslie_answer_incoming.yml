@@ -1,21 +1,21 @@
-name: device1-answer-incoming
+name: leslie-answer-incoming
 steps:
   - action: register
-    client: device1
+    client: Leslie
     timeout: 30
   - action: expect_incoming
-    client: device1
-    save_as: device1_incoming
+    client: Leslie
+    save_as: leslie_incoming
     timeout: 120
   - action: answer
-    call: device1_incoming
+    call: leslie_incoming
   - action: wait_media
-    call: device1_incoming
+    call: leslie_incoming
     timeout: 30
   - action: play_tts
-    call: device1_incoming
+    call: leslie_incoming
     text: "test call established. Pls. hang up"
   - action: wait_state
-    call: device1_incoming
+    call: leslie_incoming
     state: disconnected
     timeout: 120

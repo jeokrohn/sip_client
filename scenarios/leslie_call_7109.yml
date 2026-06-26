@@ -1,24 +1,24 @@
-name: device1-call-7109
+name: leslie-call-7109
 steps:
   - action: register
-    client: device1
+    client: Leslie
     timeout: 30
   - action: call
-    client: device1
+    client: Leslie
     target: "80027109"
-    save_as: device1_to_7109
+    save_as: leslie_to_7109
     timeout: 30
   - action: wait_state
-    call: device1_to_7109
+    call: leslie_to_7109
     state: connected
     timeout: 30
   - action: wait_media
-    call: device1_to_7109
+    call: leslie_to_7109
     timeout: 30
   - action: play_tts
-    call: device1_to_7109
+    call: leslie_to_7109
     text: "hello this is a test call. Pls. hang up"
   - action: wait_state
-    call: device1_to_7109
+    call: leslie_to_7109
     state: disconnected
     timeout: 20

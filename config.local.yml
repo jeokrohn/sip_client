@@ -2,12 +2,29 @@ artifacts_dir: artifacts
 #dns_nameservers:
 #  - "144.254.71.184"
 clients:
-  - name: device1
+  - name: Leslie
     id_uri: "sip:lkulf5xjrn_AFFEAFFE0001@90236926.us10.bcld.webex.com"
     registrar_uri: "sip:90236926.us10.bcld.webex.com"
     proxy_uri: "sips:jfk06.hosted-us.bcld.webex.com;lr"
-    username_env: WX_SIP_DEVICE1_USER
-    password_env: WX_SIP_DEVICE1_PASSWORD
+    username_env: WX_SIP_LESLIE_USER
+    password_env: WX_SIP_LESLIE_PASSWORD
     transport: tls
     enable_video: false
+  - name: Heidi
+    id_uri: "sip:lqtwbjyh23_AFFEAFFE0002@90236926.us10.bcld.webex.com"
+    registrar_uri: "sip:90236926.us10.bcld.webex.com"
+    proxy_uri: "sips:jfk06.hosted-us.bcld.webex.com;lr"
+    username_env: WX_SIP_HEIDI_USER
+    password_env: WX_SIP_HEIDI_PASSWORD
+    transport: tls
+    enable_video: false
+  - name: Ken
+    id_uri: "sip:vm8me4q0jp_AFFEAFFE0003@90236926.us10.bcld.webex.com"
+    registrar_uri: "sip:90236926.us10.bcld.webex.com"
+    proxy_uri: "sips:jfk06.hosted-us.bcld.webex.com;lr"
+    username_env: WX_SIP_KEN_USER
+    password_env: WX_SIP_KEN_PASSWORD
+    transport: tls
+    enable_video: false
+
 targets: []
