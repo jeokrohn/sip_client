@@ -74,6 +74,20 @@ steps:
 ```
 
 Numeric targets such as `"7109"` are treated as extensions and dialed against the calling client's registrar host.
+Set `extension` on a client when the framework should know that a configured SIP identity owns a numeric extension:
+
+```yaml
+clients:
+  - name: bob
+    id_uri: "sip:bob@example.webexcalling.invalid"
+    registrar_uri: "sip:example.webexcalling.invalid"
+    username_env: WX_SIP_BOB_USER
+    password_env: WX_SIP_BOB_PASSWORD
+    extension: "7108"
+```
+
+The live backend still dials `target: "7108"` as `sip:7108@<caller-registrar-host>`. The extension ownership field
+lets the fake backend and local smoke tests map that dialed extension URI back to the configured client.
 
 The live PJSUA2 backend requires SRTP on each account. Webex/BroadWorks inbound calls can offer `RTP/SAVP`
 with SDES `a=crypto`, while still using `sip:` URIs over TLS. Client configs must use TLS transport, a `sips:`

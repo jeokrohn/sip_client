@@ -191,9 +191,9 @@ class Pjsua2SipBackend:
 
         :param client_name: Calling logical client name.
         :param target_uri: Dialable SIP target URI.
-        :param timeout: Maximum call setup wait in seconds.
+        :param timeout: Retained for backend API compatibility; use ``wait_state`` for call setup waits.
         :param video: Whether to offer a video media stream.
-        :returns: Connected call handle.
+        :returns: Created outgoing call handle.
         """
 
         account = self._account(client_name)
@@ -207,7 +207,6 @@ class Pjsua2SipBackend:
         prm = self.pj.CallOpParam(True)
         _set_call_media_counts(prm, video_count=1 if video else 0, text_count=0)
         pj_call.makeCall(target_uri, prm)
-        await self.wait_call_state(handle, "connected", timeout=timeout)
         return handle
 
     async def wait_for_incoming(
@@ -227,13 +226,22 @@ class Pjsua2SipBackend:
         """
 
         account = self._account(client_name)
-        try:
-            handle = await asyncio.wait_for(account.incoming.get(), timeout=timeout)
-        except TimeoutError as exc:
-            raise WxTimeoutError(f"Timed out waiting for incoming call on {client_name}") from exc
-        if from_uri and handle.remote_uri != from_uri:
-            raise BackendError(f"Incoming call on {client_name} came from {handle.remote_uri}, expected {from_uri}")
-        return handle
+        deadline = asyncio.get_running_loop().time() + timeout
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise WxTimeoutError(f"Timed out waiting for incoming call on {client_name}")
+            try:
+                handle = await asyncio.wait_for(account.incoming.get(), timeout=remaining)
+            except TimeoutError as exc:
+                raise WxTimeoutError(f"Timed out waiting for incoming call on {client_name}") from exc
+
+            pj_call = self._call(handle)
+            if _refresh_call_state(pj_call, handle) == "disconnected":
+                continue
+            if from_uri and handle.remote_uri != from_uri:
+                raise BackendError(f"Incoming call on {client_name} came from {handle.remote_uri}, expected {from_uri}")
+            return handle
 
     async def answer(self, call: CallHandle, status_code: int = 200) -> None:
         """Answer an incoming call.
@@ -243,10 +251,18 @@ class Pjsua2SipBackend:
         :returns: None.
         """
 
+        pj_call = self._call(call)
+        if _refresh_call_state(pj_call, call) == "disconnected":
+            raise BackendError(f"Cannot answer call {call.id}; it is already disconnected")
         prm = self.pj.CallOpParam(True)
         prm.statusCode = int(status_code)
         _set_call_media_counts(prm, video_count=0, text_count=0)
-        self._call(call).answer(prm)
+        try:
+            pj_call.answer(prm)
+        except Exception as exc:
+            if _refresh_call_state(pj_call, call) == "disconnected":
+                raise BackendError(f"Cannot answer call {call.id}; it is already disconnected") from exc
+            raise BackendError(f"Failed to answer call {call.id}: {exc}") from exc
         await self.wait_call_state(call, "connected", timeout=30.0)
 
     async def reject(self, call: CallHandle, status_code: int = 486) -> None:
@@ -281,7 +297,15 @@ class Pjsua2SipBackend:
         """
 
         prm = self.pj.CallOpParam()
-        self._call(call).hangup(prm)
+        pj_call = self._call(call)
+        if _refresh_call_state(pj_call, call) == "disconnected":
+            return
+        try:
+            pj_call.hangup(prm)
+        except Exception as exc:
+            if _refresh_call_state(pj_call, call) == "disconnected":
+                return
+            raise BackendError(f"Failed to hang up call {call.id}: {exc}") from exc
 
     async def hold(self, call: CallHandle) -> None:
         """Place a call on hold.
@@ -760,20 +784,66 @@ def _create_call_adapter(
 
             try:
                 info = self.getInfo()
-                state_text = str(getattr(info, "stateText", "")).lower()
-                if "confirmed" in state_text:
-                    return "connected"
-                if "discon" in state_text:
-                    return "disconnected"
-                if "early" in state_text:
-                    return "ringing"
-                if "call" in state_text:
-                    return "calling"
-                return state_text or "unknown"
+                return _normalize_call_state_text(str(getattr(info, "stateText", "")))
             except Exception:
                 return "unknown"
 
     return CallAdapter()
+
+
+def _refresh_call_state(pj_call: Any, call: CallHandle) -> str:
+    """Refresh a neutral call handle from the current PJSUA2 call state.
+
+    :param pj_call: PJSUA2 call adapter.
+    :param call: Backend-neutral call handle to update.
+    :returns: Refreshed backend-neutral state.
+    """
+
+    state = _current_call_state(pj_call, fallback=call.state)
+    call.state = state
+    return state
+
+
+def _current_call_state(pj_call: Any, fallback: str = "unknown") -> str:
+    """Return a PJSUA2 call's current backend-neutral state.
+
+    :param pj_call: PJSUA2 call adapter.
+    :param fallback: State to return when PJSUA2 cannot provide one.
+    :returns: Backend-neutral call state.
+    """
+
+    normalizer = getattr(pj_call, "_normalized_state", None)
+    if callable(normalizer):
+        try:
+            state = str(normalizer())
+        except Exception:
+            return fallback
+        return state or fallback
+    try:
+        info = pj_call.getInfo()
+    except Exception:
+        return fallback
+    return _normalize_call_state_text(str(getattr(info, "stateText", "")), fallback=fallback)
+
+
+def _normalize_call_state_text(state_text: str, fallback: str = "unknown") -> str:
+    """Normalize PJSUA2 call-state text into the backend state vocabulary.
+
+    :param state_text: Raw PJSUA2 state text.
+    :param fallback: State to return when the raw text is empty.
+    :returns: Backend-neutral call state.
+    """
+
+    normalized = state_text.lower()
+    if "confirmed" in normalized:
+        return "connected"
+    if "discon" in normalized:
+        return "disconnected"
+    if "early" in normalized:
+        return "ringing"
+    if "call" in normalized:
+        return "calling"
+    return normalized or fallback
 
 
 def _set_video_count(config_or_param: Any, count: int) -> None:
@@ -841,9 +911,7 @@ def _validate_secure_signaling_for_mandatory_srtp(client: SipClientConfig) -> No
     proxy_uri = client.proxy_uri.lower() if client.proxy_uri else ""
     if client.transport.lower() == "tls" or proxy_uri.startswith("sips:") or "transport=tls" in proxy_uri:
         return
-    raise BackendError(
-        f"Client {client.name} requires TLS or SIPS signaling because live PJSUA2 calls require SRTP"
-    )
+    raise BackendError(f"Client {client.name} requires TLS or SIPS signaling because live PJSUA2 calls require SRTP")
 
 
 def _clear_vector(vector: Any) -> None:

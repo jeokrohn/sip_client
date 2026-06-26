@@ -28,6 +28,7 @@ clients:
     registrar_uri: sip:registrar.example.invalid
     username_env: ALICE_USER
     password_env: ALICE_PASS
+    extension: " 1001 "
 targets:
   - name: webex
     uri: sip:webex@example.invalid
@@ -40,10 +41,99 @@ targets:
 
     assert config.client("alice").credentials(config.env).username == "alice"
     assert config.client("alice").credentials(config.env).password == "secret"
+    assert config.client("alice").extension == "1001"
     assert config.dns_nameservers == ("192.0.2.53",)
     assert config.resolve_target_uri("alice") == "sip:alice@example.invalid"
     assert config.resolve_target_uri("webex") == "sip:webex@example.invalid"
     assert config.resolve_target_uri("sip:literal@example.invalid") == "sip:literal@example.invalid"
+    assert config.client_for_extension("1001").name == "alice"
+    assert config.client_for_extension("9999") is None
+    assert config.client_name_for_extension_uri("sip:1001@registrar.example.invalid") == "alice"
+    assert config.client_name_for_extension_uri("sip:1001@other.example.invalid") is None
+
+
+def test_load_config_rejects_duplicate_extensions(tmp_path: Path) -> None:
+    """Verify duplicate client extensions are rejected clearly.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(
+        """
+clients:
+  - name: alice
+    id_uri: sip:alice@example.invalid
+    registrar_uri: sip:registrar.example.invalid
+    username_env: ALICE_USER
+    password_env: ALICE_PASS
+    extension: "1001"
+  - name: bob
+    id_uri: sip:bob@example.invalid
+    registrar_uri: sip:registrar.example.invalid
+    username_env: BOB_USER
+    password_env: BOB_PASS
+    extension: "1001"
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="Duplicate client extension"):
+        load_config(config_path, env_file=None)
+
+
+def test_load_config_accepts_unquoted_numeric_extension(tmp_path: Path) -> None:
+    """Verify YAML numeric extensions are normalized to strings.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(
+        """
+clients:
+  - name: alice
+    id_uri: sip:alice@example.invalid
+    registrar_uri: sip:registrar.example.invalid
+    username_env: ALICE_USER
+    password_env: ALICE_PASS
+    extension: 1001
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path, env_file=None)
+
+    assert config.client("alice").extension == "1001"
+
+
+@pytest.mark.parametrize("extension", ["abc", "10 01", ""])
+def test_load_config_rejects_invalid_extensions(tmp_path: Path, extension: str) -> None:
+    """Verify client extensions must be non-empty decimal strings.
+
+    :param tmp_path: Temporary pytest directory.
+    :param extension: Invalid extension value to test.
+    :returns: None.
+    """
+
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(
+        f"""
+clients:
+  - name: alice
+    id_uri: sip:alice@example.invalid
+    registrar_uri: sip:registrar.example.invalid
+    username_env: ALICE_USER
+    password_env: ALICE_PASS
+    extension: "{extension}"
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="extension"):
+        load_config(config_path, env_file=None)
 
 
 def test_load_config_falls_back_to_scutil_nameservers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

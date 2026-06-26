@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from wxcalls.backends import pjsua2 as pjsua2_backend
 from wxcalls.backends.base import CallHandle
 from wxcalls.backends.pjsua2 import (
     Pjsua2SipBackend,
@@ -79,9 +81,7 @@ def test_configure_srtp_requires_secure_media() -> None:
 
     assert account_config.mediaConfig.srtpUse == FakePj.PJMEDIA_SRTP_MANDATORY
     assert account_config.mediaConfig.srtpSecureSignaling == 0
-    assert [crypto.name for crypto in account_config.mediaConfig.srtpOpt.cryptos] == [
-        "AES_CM_128_HMAC_SHA1_80"
-    ]
+    assert [crypto.name for crypto in account_config.mediaConfig.srtpOpt.cryptos] == ["AES_CM_128_HMAC_SHA1_80"]
     assert account_config.mediaConfig.srtpOpt.keyings == [FakePj.PJMEDIA_SRTP_KEYING_SDES]
 
 
@@ -110,6 +110,76 @@ def test_set_call_media_counts_disables_text_and_preserves_audio() -> None:
     assert call_param.opt.audioCount == 1
     assert call_param.opt.videoCount == 0
     assert call_param.opt.textCount == 0
+
+
+def test_place_call_returns_before_connected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify outgoing PJSUA2 calls do not block before paired inbound steps run.
+
+    :param monkeypatch: Pytest monkeypatch fixture.
+    :returns: None.
+    """
+
+    backend = Pjsua2SipBackend()
+    backend.pj = FakeCallPlacementPj()
+    backend.accounts["alice"] = object()
+    pj_call = FakeOutgoingPjCall()
+    monkeypatch.setattr(pjsua2_backend, "_create_call_adapter", lambda backend_, account: pj_call)
+
+    call = asyncio.run(backend.place_call("alice", "sip:bob@example.invalid", timeout=0.01))
+
+    assert call.state == "calling"
+    assert pj_call.target_uri == "sip:bob@example.invalid"
+    assert pj_call.waited_states == []
+
+
+def test_wait_for_incoming_skips_disconnected_call() -> None:
+    """Verify stale incoming calls are skipped before the scenario can answer them.
+
+    :returns: None.
+    """
+
+    backend = Pjsua2SipBackend()
+    stale = CallHandle(id="stale", client_name="bob", remote_uri="sip:alice", state="incoming")
+    live = CallHandle(id="live", client_name="bob", remote_uri="sip:alice", state="incoming")
+    backend.calls = {
+        stale.id: FakeStatefulPjCall("DISCONNECTED"),
+        live.id: FakeStatefulPjCall("INCOMING"),
+    }
+
+    async def run() -> CallHandle:
+        """Queue stale and live inbound calls, then wait for the first usable one.
+
+        :returns: Incoming call handle that is still answerable.
+        """
+
+        account = SimpleNamespace(incoming=asyncio.Queue())
+        backend.accounts["bob"] = account
+        await account.incoming.put(stale)
+        await account.incoming.put(live)
+        return await backend.wait_for_incoming("bob", timeout=0.1)
+
+    assert asyncio.run(run()) is live
+    assert stale.state == "disconnected"
+    assert live.state == "incoming"
+
+
+def test_answer_disconnected_call_raises_backend_error() -> None:
+    """Verify dead incoming calls produce a framework error instead of a PJSUA2 error.
+
+    :returns: None.
+    """
+
+    backend = Pjsua2SipBackend()
+    backend.pj = FakeCallPlacementPj()
+    call = CallHandle(id="call-1", client_name="bob", remote_uri="sip:alice", state="incoming")
+    pj_call = FakeStatefulPjCall("DISCONNECTED")
+    backend.calls[call.id] = pj_call
+
+    with pytest.raises(BackendError, match="already disconnected"):
+        asyncio.run(backend.answer(call))
+
+    assert call.state == "disconnected"
+    assert not pj_call.answered
 
 
 def test_active_media_status_accepts_binding_constant_and_text() -> None:
@@ -288,6 +358,78 @@ class FakeCallSetting:
         self.audioCount = 0
         self.videoCount = 1
         self.textCount = 1
+
+
+class FakeCallPlacementPj:
+    def CallOpParam(self, use_default_call_setting: bool = False) -> FakeCallParam:  # noqa: N802 - PJSUA2 API name
+        """Create fake call operation parameters.
+
+        :param use_default_call_setting: Whether default call settings were requested.
+        :returns: Fake call operation parameter.
+        """
+
+        return FakeCallParam()
+
+
+class FakeOutgoingPjCall:
+    def __init__(self) -> None:
+        """Create fake outgoing-call state.
+
+        :returns: None.
+        """
+
+        self.handle_id: str | None = None
+        self.target_uri: str | None = None
+        self.waited_states: list[str] = []
+
+    def makeCall(self, target_uri: str, prm: FakeCallParam) -> None:  # noqa: N802 - PJSUA2 API name
+        """Record the requested outbound target.
+
+        :param target_uri: Dialable SIP target URI.
+        :param prm: Fake call operation parameter.
+        :returns: None.
+        """
+
+        self.target_uri = target_uri
+
+    async def wait_state(self, state: str, timeout: float) -> None:
+        """Record any unexpected wait-state request.
+
+        :param state: Desired call state.
+        :param timeout: Maximum wait duration.
+        :returns: None.
+        """
+
+        self.waited_states.append(state)
+
+
+class FakeStatefulPjCall:
+    def __init__(self, state_text: str) -> None:
+        """Create a fake PJSUA2 call with state text.
+
+        :param state_text: PJSUA2-like state text.
+        :returns: None.
+        """
+
+        self.state_text = state_text
+        self.answered = False
+
+    def getInfo(self) -> SimpleNamespace:  # noqa: N802 - PJSUA2 API name
+        """Return fake call information.
+
+        :returns: Object exposing PJSUA2-like ``stateText``.
+        """
+
+        return SimpleNamespace(stateText=self.state_text)
+
+    def answer(self, prm: FakeCallParam) -> None:
+        """Mark the fake call answered.
+
+        :param prm: Fake call operation parameter.
+        :returns: None.
+        """
+
+        self.answered = True
 
 
 def _backend_with_fake_recording(stop_raises: bool) -> Pjsua2SipBackend:

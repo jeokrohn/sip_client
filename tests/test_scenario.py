@@ -31,13 +31,13 @@ def test_parse_scenario_validates_required_fields() -> None:
     assert scenario.steps[2].action == "wait_media"
 
 
-def test_device1_call_7109_scenario_matches_expected_flow() -> None:
+def test_leslie_call_7109_scenario_matches_expected_flow() -> None:
     """Verify the outbound sample scenario keeps its expected action flow.
 
     :returns: None.
     """
 
-    scenario = load_scenario(Path("scenarios/device1_call_7109.yml"))
+    scenario = load_scenario(Path("scenarios/leslie_call_7109.yml"))
 
     assert [step.action for step in scenario.steps] == [
         "register",
@@ -49,19 +49,19 @@ def test_device1_call_7109_scenario_matches_expected_flow() -> None:
     ]
     assert scenario.steps[1].params["target"] == "80027109"
     assert scenario.steps[-1].params == {
-        "call": "device1_to_7109",
+        "call": "leslie_to_7109",
         "state": "disconnected",
         "timeout": 20,
     }
 
 
-def test_device1_answer_incoming_scenario_matches_expected_flow() -> None:
+def test_leslie_answer_incoming_scenario_matches_expected_flow() -> None:
     """Verify the inbound sample scenario keeps its expected action flow.
 
     :returns: None.
     """
 
-    scenario = load_scenario(Path("scenarios/device1_answer_incoming.yml"))
+    scenario = load_scenario(Path("scenarios/leslie_answer_incoming.yml"))
 
     assert [step.action for step in scenario.steps] == [
         "register",
@@ -72,13 +72,13 @@ def test_device1_answer_incoming_scenario_matches_expected_flow() -> None:
         "wait_state",
     ]
     assert scenario.steps[1].params == {
-        "client": "device1",
-        "save_as": "device1_incoming",
+        "client": "Leslie",
+        "save_as": "leslie_incoming",
         "timeout": 120,
     }
     assert scenario.steps[4].params["text"] == "test call established. Pls. hang up"
     assert scenario.steps[-1].params == {
-        "call": "device1_incoming",
+        "call": "leslie_incoming",
         "state": "disconnected",
         "timeout": 120,
     }

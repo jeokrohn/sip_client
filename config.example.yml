@@ -7,6 +7,7 @@ clients:
     proxy_uri: "sip:example.webexcalling.invalid;transport=tls"
     username_env: WX_SIP_ALICE_USER
     password_env: WX_SIP_ALICE_PASSWORD
+    extension: "1001"
     transport: tls
     enable_video: true
   - name: bob
@@ -15,6 +16,7 @@ clients:
     proxy_uri: "sip:example.webexcalling.invalid;transport=tls"
     username_env: WX_SIP_BOB_USER
     password_env: WX_SIP_BOB_PASSWORD
+    extension: "1002"
     transport: tls
     enable_video: true
 targets:

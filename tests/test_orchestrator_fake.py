@@ -155,6 +155,42 @@ def test_fake_backend_runs_attended_transfer(tmp_path: Path) -> None:
     assert lab.calls["primary"].state == "transferred"
 
 
+def test_fake_backend_pairs_numeric_extension_to_owner(tmp_path: Path) -> None:
+    """Verify owned numeric extensions produce paired fake inbound calls.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
+    lab = _lab(tmp_path)
+    scenario = parse_scenario(
+        {
+            "name": "extension-pairing",
+            "steps": [
+                {"action": "register", "clients": ["alice", "bob"]},
+                {"action": "call", "client": "alice", "target": "7108", "save_as": "alice_to_bob"},
+                {"action": "expect_incoming", "client": "bob", "save_as": "bob_incoming"},
+                {"action": "answer", "call": "bob_incoming"},
+                {"action": "wait_state", "call": "alice_to_bob", "state": "connected"},
+            ],
+        }
+    )
+
+    async def run() -> None:
+        """Run the extension-pairing scenario inside a managed lab.
+
+        :returns: None.
+        """
+
+        async with lab:
+            await lab.run_scenario(scenario)
+
+    import asyncio
+
+    asyncio.run(run())
+    assert lab.calls["bob_incoming"].client_name == "bob"
+
+
 def test_progress_reporter_receives_step_and_call_lifecycle_messages(tmp_path: Path) -> None:
     """Verify progress reporting includes steps and call lifecycle events.
 
@@ -286,6 +322,7 @@ def test_numeric_extension_targets_resolve_against_calling_client_registrar(tmp_
     assert lab.resolve_call_target("alice", "7109") == "sip:7109@registrar.example.invalid"
     assert lab.resolve_call_target("charlie", "7109") == "sip:7109@registrar.example.invalid"
     assert lab.resolve_call_target("alice", "sip:7109@example.invalid") == "sip:7109@example.invalid"
+    assert lab.config.client_name_for_extension_uri("sip:7108@registrar.example.invalid") == "bob"
 
 
 def _lab(tmp_path: Path, progress_reporter: Callable[[str], None] | None = None) -> CallLab:
@@ -311,6 +348,7 @@ def _lab(tmp_path: Path, progress_reporter: Callable[[str], None] | None = None)
                 registrar_uri="sip:registrar.example.invalid",
                 username_env="BOB_USER",
                 password_env="BOB_PASS",
+                extension="7108",
             ),
             SipClientConfig(
                 name="charlie",

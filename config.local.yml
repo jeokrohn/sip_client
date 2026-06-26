@@ -8,6 +8,7 @@ clients:
     proxy_uri: "sips:jfk06.hosted-us.bcld.webex.com;lr"
     username_env: WX_SIP_LESLIE_USER
     password_env: WX_SIP_LESLIE_PASSWORD
+    extension: "5551"
     transport: tls
     enable_video: false
   - name: Heidi
@@ -16,6 +17,7 @@ clients:
     proxy_uri: "sips:jfk06.hosted-us.bcld.webex.com;lr"
     username_env: WX_SIP_HEIDI_USER
     password_env: WX_SIP_HEIDI_PASSWORD
+    extension: "7109"
     transport: tls
     enable_video: false
   - name: Ken
@@ -24,6 +26,7 @@ clients:
     proxy_uri: "sips:jfk06.hosted-us.bcld.webex.com;lr"
     username_env: WX_SIP_KEN_USER
     password_env: WX_SIP_KEN_PASSWORD
+    extension: "7108"
     transport: tls
     enable_video: false
 

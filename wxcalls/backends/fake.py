@@ -354,7 +354,7 @@ class FakeSipBackend:
         for client in self.config.clients:
             if client.id_uri == uri:
                 return client.name
-        return None
+        return self.config.client_name_for_extension_uri(uri)
 
     def _client_uri(self, name: str) -> str:
         """Return a configured fake client's identity URI.

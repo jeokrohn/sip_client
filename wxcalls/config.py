@@ -36,6 +36,7 @@ class SipClientConfig:
     :param registrar_uri: SIP registrar URI.
     :param username_env: Environment variable containing the SIP username.
     :param password_env: Environment variable containing the SIP password.
+    :param extension: Optional numeric extension owned by this client.
     :param proxy_uri: Optional outbound proxy or route URI.
     :param transport: Preferred transport label, typically ``tls``, ``tcp``, or ``udp``.
     :param enable_video: Whether video may be offered for video smoke tests.
@@ -47,6 +48,7 @@ class SipClientConfig:
     registrar_uri: str
     username_env: str
     password_env: str
+    extension: str | None = None
     proxy_uri: str | None = None
     transport: str = "tls"
     enable_video: bool = False
@@ -149,6 +151,37 @@ class LabConfig:
                 return configured_target.uri
         return target
 
+    def client_for_extension(self, extension: str) -> SipClientConfig | None:
+        """Return the client that owns an extension.
+
+        :param extension: Numeric extension to resolve.
+        :returns: Matching SIP client, if one owns the extension.
+        """
+
+        normalized = extension.strip()
+        for client in self.clients:
+            if client.extension == normalized:
+                return client
+        return None
+
+    def client_name_for_extension_uri(self, uri: str) -> str | None:
+        """Resolve an extension SIP URI back to a configured client name.
+
+        :param uri: SIP URI such as ``sip:7108@registrar.example.invalid``.
+        :returns: Matching client name, if the URI belongs to an owned extension.
+        """
+
+        user, host = _sip_uri_user_host(uri)
+        if user is None or host is None:
+            return None
+        client = self.client_for_extension(user)
+        if client is None:
+            return None
+        registrar_host = _sip_uri_host(client.registrar_uri)
+        if registrar_host is None or host.lower() != registrar_host.lower():
+            return None
+        return client.name
+
     def validate_credentials(self) -> None:
         """Validate that all configured client credentials can be resolved.
 
@@ -168,6 +201,7 @@ class _RawSipClientConfig(BaseModel):
     :param registrar_uri: SIP registrar URI.
     :param username_env: Environment variable containing the SIP username.
     :param password_env: Environment variable containing the SIP password.
+    :param extension: Optional numeric extension owned by this client.
     :param proxy_uri: Optional outbound proxy or route URI.
     :param transport: Preferred transport label.
     :param enable_video: Whether video may be offered for video smoke tests.
@@ -179,6 +213,7 @@ class _RawSipClientConfig(BaseModel):
     registrar_uri: str
     username_env: str
     password_env: str
+    extension: str | int | None = None
     proxy_uri: str | None = None
     transport: str = "tls"
     enable_video: bool = False
@@ -212,6 +247,24 @@ class _RawSipClientConfig(BaseModel):
         stripped = value.strip()
         return stripped or None
 
+    @field_validator("extension", mode="before")
+    @classmethod
+    def _optional_numeric_extension(cls, value: str | int | None) -> str | None:
+        """Normalize and validate an optional client extension.
+
+        :param value: Candidate extension value.
+        :returns: Stripped numeric extension, or ``None`` when absent.
+        """
+
+        if value is None:
+            return None
+        stripped = str(value).strip()
+        if not stripped:
+            raise ValueError("extension cannot be empty")
+        if not stripped.isdecimal():
+            raise ValueError("extension must contain only digits")
+        return stripped
+
     @field_validator("transport")
     @classmethod
     def _lower_transport(cls, value: str) -> str:
@@ -238,6 +291,7 @@ class _RawSipClientConfig(BaseModel):
             registrar_uri=self.registrar_uri,
             username_env=self.username_env,
             password_env=self.password_env,
+            extension=self.extension,
             proxy_uri=self.proxy_uri,
             transport=self.transport,
             enable_video=self.enable_video,
@@ -343,6 +397,7 @@ class _RawLabConfig(BaseModel):
 
         _ensure_unique("client", [client.name for client in self.clients])
         _ensure_unique("target", [target.name for target in self.targets])
+        _ensure_unique_extensions([client.extension for client in self.clients])
         return self
 
     def to_config(self, env: dict[str, str], dns_nameservers: tuple[str, ...]) -> LabConfig:
@@ -459,6 +514,21 @@ def _ensure_unique(kind: str, values: list[str]) -> None:
         raise ConfigError(f"Duplicate {kind} name(s): {', '.join(duplicates)}")
 
 
+def _ensure_unique_extensions(values: list[str | None]) -> None:
+    """Validate that configured client extensions are unique.
+
+    :param values: Optional extension values to inspect for duplicates.
+    :returns: None.
+    :raises ConfigError: If duplicate extensions are present.
+    """
+
+    present = [value for value in values if value is not None]
+    seen: set[str] = set()
+    duplicates = sorted({value for value in present if value in seen or seen.add(value)})
+    if duplicates:
+        raise ConfigError(f"Duplicate client extension(s): {', '.join(duplicates)}")
+
+
 def _strip_env_quotes(value: str) -> str:
     """Remove one matching pair of shell-style quotes from a dotenv value.
 
@@ -469,3 +539,43 @@ def _strip_env_quotes(value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
         return value[1:-1]
     return value
+
+
+def _sip_uri_user_host(uri: str) -> tuple[str | None, str | None]:
+    """Extract the user and host from a SIP URI.
+
+    :param uri: Candidate SIP URI.
+    :returns: ``(user, host)`` when both are present, otherwise ``(None, None)``.
+    """
+
+    stripped = uri.strip()
+    if stripped.startswith("<") and stripped.endswith(">"):
+        stripped = stripped[1:-1].strip()
+    if ":" not in stripped or "@" not in stripped:
+        return None, None
+    scheme, rest = stripped.split(":", 1)
+    if scheme.lower() not in {"sip", "sips"}:
+        return None, None
+    user, host_part = rest.split("@", 1)
+    host = host_part.split(";", 1)[0].strip()
+    if not user or not host:
+        return None, None
+    return user.strip(), host
+
+
+def _sip_uri_host(uri: str) -> str | None:
+    """Extract the host from a SIP or SIPS URI.
+
+    :param uri: Candidate SIP URI.
+    :returns: Host component, if available.
+    """
+
+    stripped = uri.strip()
+    if ":" not in stripped:
+        return None
+    scheme, rest = stripped.split(":", 1)
+    if scheme.lower() not in {"sip", "sips"}:
+        return None
+    host_part = rest.rsplit("@", 1)[-1]
+    host = host_part.split(";", 1)[0].strip()
+    return host or None
