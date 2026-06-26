@@ -19,6 +19,9 @@ from wxcalls.config import LabConfig, SipClientConfig, SipCredentials
 from wxcalls.exceptions import BackendError, UnsupportedFeature
 from wxcalls.exceptions import TimeoutError as WxTimeoutError
 
+_RECORDING_READY_TIMEOUT = 1.0
+_RECORDING_POLL_INTERVAL = 0.05
+
 
 class Pjsua2SipBackend:
     """Live SIP backend implemented with PJSUA2 Python bindings."""
@@ -415,8 +418,18 @@ class Pjsua2SipBackend:
                     stop_error = exc
             with suppress(ValueError):
                 pj_call.recorders.remove(recorder)
-            if stop_error is not None and not _recording_file_has_content(output_path):
-                raise BackendError(f"Failed to stop recording for call {call.id}: {stop_error}") from stop_error
+            release_error = None
+            try:
+                _release_audio_recorder(recorder)
+            except Exception as exc:
+                release_error = exc
+            if not await _wait_for_readable_recording(output_path, timeout=_RECORDING_READY_TIMEOUT):
+                if stop_error is not None:
+                    raise BackendError(f"Failed to stop recording for call {call.id}: {stop_error}") from stop_error
+                if release_error is not None:
+                    message = f"Failed to finalize recording for call {call.id}: {release_error}"
+                    raise BackendError(message) from release_error
+                raise BackendError(f"Recorder did not produce a readable WAV for call {call.id}: {output_path}")
 
     async def video_smoke(
         self,
@@ -556,6 +569,9 @@ class Pjsua2SipBackend:
                 players.clear()
             recorders = getattr(pj_call, "recorders", None)
             if recorders is not None:
+                for recorder in list(recorders):
+                    with suppress(Exception):
+                        _release_audio_recorder(recorder)
                 recorders.clear()
 
     async def _poll_events(self) -> None:
@@ -927,16 +943,48 @@ def _clear_vector(vector: Any) -> None:
     del vector[:]
 
 
-def _recording_file_has_content(path: Path) -> bool:
-    """Return whether a recorder produced a non-empty artifact.
+def _release_audio_recorder(recorder: Any) -> None:
+    """Release a PJSUA2 recorder object so the WAV file is finalized.
+
+    :param recorder: Recorder object created by PJSUA2.
+    :returns: None.
+    """
+
+    destroy = getattr(type(recorder), "__swig_destroy__", None)
+    if callable(destroy):
+        destroy(recorder)
+        with suppress(Exception):
+            recorder.thisown = False
+
+
+async def _wait_for_readable_recording(path: Path, timeout: float) -> bool:
+    """Wait until a recorder output can be opened as a WAV file.
+
+    :param path: Recording path to inspect.
+    :param timeout: Maximum wait duration in seconds.
+    :returns: ``True`` when the file is readable before the deadline.
+    """
+
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        if _recording_file_is_readable_wav(path):
+            return True
+        if asyncio.get_running_loop().time() >= deadline:
+            return False
+        await asyncio.sleep(_RECORDING_POLL_INTERVAL)
+
+
+def _recording_file_is_readable_wav(path: Path) -> bool:
+    """Return whether a recorder produced a readable WAV artifact.
 
     :param path: Recording path.
-    :returns: ``True`` when the path exists and has bytes.
+    :returns: ``True`` when the path exists and has a valid WAV header.
     """
 
     try:
-        return path.stat().st_size > 0
-    except OSError:
+        with wave.open(str(path), "rb") as wav:
+            return wav.getnchannels() > 0 and wav.getsampwidth() > 0 and wav.getframerate() > 0
+    except (OSError, EOFError, wave.Error):
         return False
 
 

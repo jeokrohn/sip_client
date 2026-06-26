@@ -237,6 +237,7 @@ def detect_marker(path: Path, marker: str, threshold: float = 0.08) -> bool:
     :param marker: Marker identifier.
     :param threshold: Minimum normalized tone energy ratio.
     :returns: ``True`` if the marker frequency is detected.
+    :raises MediaError: If the WAV file cannot be read.
     """
 
     samples, sample_rate = _read_mono_int16(path)
@@ -267,13 +268,16 @@ def _read_mono_int16(path: Path) -> tuple[list[int], int]:
     :raises MediaError: If the WAV format is unsupported.
     """
 
-    with wave.open(str(path), "rb") as wav:
-        if wav.getnchannels() != DEFAULT_CHANNELS or wav.getsampwidth() != DEFAULT_SAMPLE_WIDTH:
-            raise MediaError(f"Unsupported WAV format for marker detection: {path}")
-        frames = wav.readframes(wav.getnframes())
-        sample_count = len(frames) // DEFAULT_SAMPLE_WIDTH
-        samples = list(struct.unpack(f"<{sample_count}h", frames))
-        return samples, wav.getframerate()
+    try:
+        with wave.open(str(path), "rb") as wav:
+            if wav.getnchannels() != DEFAULT_CHANNELS or wav.getsampwidth() != DEFAULT_SAMPLE_WIDTH:
+                raise MediaError(f"Unsupported WAV format for marker detection: {path}")
+            frames = wav.readframes(wav.getnframes())
+            sample_count = len(frames) // DEFAULT_SAMPLE_WIDTH
+            samples = list(struct.unpack(f"<{sample_count}h", frames))
+            return samples, wav.getframerate()
+    except (OSError, EOFError, wave.Error) as exc:
+        raise MediaError(f"Unable to read WAV for marker detection: {path}: {exc}") from exc
 
 
 def _goertzel_power(samples: list[int], sample_rate: int, frequency: float) -> float:

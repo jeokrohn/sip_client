@@ -193,8 +193,8 @@ def test_active_media_status_accepts_binding_constant_and_text() -> None:
     assert not _is_active_media_status(FakePj, 0)
 
 
-def test_record_wav_ignores_stop_failure_when_artifact_exists(tmp_path: Path) -> None:
-    """Verify recorder stop failures are ignored when output exists.
+def test_record_wav_finalizes_recorder_before_return(tmp_path: Path) -> None:
+    """Verify recorder output is readable before ``record_wav`` returns.
 
     :param tmp_path: Temporary pytest directory.
     :returns: None.
@@ -206,7 +206,32 @@ def test_record_wav_ignores_stop_failure_when_artifact_exists(tmp_path: Path) ->
 
     asyncio.run(backend.record_wav(call, output, 0))
 
-    assert output.read_bytes() == b"fake wav"
+    recorder = backend.pj.created_recorders[0]
+    assert output.read_bytes().startswith(b"RIFF")
+    assert recorder.finalized
+    assert backend.calls["call-1"].recorders == []
+
+
+def test_record_wav_rejects_unreadable_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify invalid recorder output is reported as a backend error.
+
+    :param tmp_path: Temporary pytest directory.
+    :param monkeypatch: Pytest monkeypatch fixture.
+    :returns: None.
+    """
+
+    monkeypatch.setattr(pjsua2_backend, "_RECORDING_READY_TIMEOUT", 0.01)
+    monkeypatch.setattr(pjsua2_backend, "_RECORDING_POLL_INTERVAL", 0.001)
+    backend = _backend_with_fake_recording(stop_raises=False, finalizes=False)
+    output = tmp_path / "recording.wav"
+    call = CallHandle(id="call-1", client_name="alice", remote_uri="sip:bob")
+
+    with pytest.raises(BackendError, match="readable WAV"):
+        asyncio.run(backend.record_wav(call, output, 0))
+
     assert backend.calls["call-1"].recorders == []
 
 
@@ -432,15 +457,16 @@ class FakeStatefulPjCall:
         self.answered = True
 
 
-def _backend_with_fake_recording(stop_raises: bool) -> Pjsua2SipBackend:
+def _backend_with_fake_recording(stop_raises: bool, finalizes: bool = True) -> Pjsua2SipBackend:
     """Create a PJSUA2 backend wired to fake media objects.
 
     :param stop_raises: Whether fake media stop should raise.
+    :param finalizes: Whether fake recorder finalization creates a valid WAV.
     :returns: Backend with one fake call registered.
     """
 
     backend = Pjsua2SipBackend()
-    backend.pj = FakeRecordingPj()
+    backend.pj = FakeRecordingPj(finalizes=finalizes)
     backend.calls["call-1"] = FakePjCall(FakeAudioMedia(stop_raises=stop_raises))
     return backend
 
@@ -448,13 +474,16 @@ def _backend_with_fake_recording(stop_raises: bool) -> Pjsua2SipBackend:
 class FakeRecordingPj:
     PJMEDIA_FILE_NO_LOOP = 1
 
-    def __init__(self) -> None:
+    def __init__(self, finalizes: bool = True) -> None:
         """Create fake PJSUA2 module state.
 
+        :param finalizes: Whether fake recorder finalization creates a valid WAV.
         :returns: None.
         """
 
         self.created_players: list[FakePlayer] = []
+        self.created_recorders: list[FakeRecorder] = []
+        self.finalizes = finalizes
 
         created_players = self.created_players
 
@@ -478,7 +507,9 @@ class FakeRecordingPj:
         :returns: Fake recorder.
         """
 
-        return FakeRecorder()
+        recorder = FakeRecorder(finalizes=self.finalizes)
+        self.created_recorders.append(recorder)
+        return recorder
 
 
 class FakePjCall:
@@ -537,14 +568,19 @@ class FakeAudioMedia:
 
 
 class FakeRecorder:
-    def __init__(self) -> None:
+    def __init__(self, finalizes: bool = True) -> None:
         """Create fake recorder state.
 
+        :param finalizes: Whether finalization creates a readable WAV.
         :returns: None.
         """
 
         self.started = False
         self.stopped = False
+        self.finalized = False
+        self.finalizes = finalizes
+        self.path: Path | None = None
+        self.thisown = True
 
     def createRecorder(self, path: str) -> None:  # noqa: N802 - PJSUA2 method name
         """Create a fake recording file.
@@ -553,7 +589,18 @@ class FakeRecorder:
         :returns: None.
         """
 
-        Path(path).write_bytes(b"fake wav")
+        self.path = Path(path)
+        self.path.write_bytes(b"pending wav header")
+
+    def __swig_destroy__(self) -> None:
+        """Finalize the fake recording like PJSUA2's SWIG destructor.
+
+        :returns: None.
+        """
+
+        if self.path is not None and self.finalizes:
+            create_silence_wav(self.path, seconds=0.01)
+        self.finalized = True
 
 
 class FakePlayer:
