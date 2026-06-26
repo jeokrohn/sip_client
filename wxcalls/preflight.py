@@ -40,6 +40,8 @@ def run_preflight(config_path: Path, env_file: Path | None = Path(".env")) -> li
     except ConfigError as exc:
         return [PreflightCheck("config", "fail", str(exc))]
 
+    # Credential validation is separated from config parsing so users can see
+    # structural YAML errors and secret-management errors as distinct checks.
     try:
         config.validate_credentials()
         checks.append(PreflightCheck("credentials", "ok", "all configured SIP secrets are present"))
@@ -55,6 +57,8 @@ def run_preflight(config_path: Path, env_file: Path | None = Path(".env")) -> li
     except OSError as exc:
         checks.append(PreflightCheck("artifacts", "fail", f"not writable: {exc}"))
 
+    # PJSUA2 is intentionally optional at install time; only live backend runs need
+    # the native binding, while fake backend tests remain portable.
     if importlib.util.find_spec("pjsua2") is None:
         checks.append(
             PreflightCheck(

@@ -23,6 +23,11 @@ class FakeSipBackend:
     """A deterministic backend that models SIP call state without network traffic."""
 
     def __init__(self) -> None:
+        """Create empty fake backend state.
+
+        :returns: None.
+        """
+
         self.config: LabConfig | None = None
         self.registered: set[str] = set()
         self.incoming: dict[str, asyncio.Queue[CallHandle]] = {}
@@ -32,13 +37,21 @@ class FakeSipBackend:
         self.registration_results: dict[str, RegistrationResult] = {}
 
     async def initialize(self, config: LabConfig, pjsip_log_path: Path | None = None) -> None:
-        """Initialize fake state for the configured clients."""
+        """Initialize fake state for the configured clients.
+
+        :param config: Parsed lab configuration.
+        :param pjsip_log_path: Ignored live-backend log path.
+        :returns: None.
+        """
 
         self.config = config
         self.incoming = {client.name: asyncio.Queue() for client in config.clients}
 
     async def shutdown(self) -> None:
-        """Clear fake backend state."""
+        """Clear fake backend state.
+
+        :returns: None.
+        """
 
         self.registered.clear()
         self.calls.clear()
@@ -52,7 +65,14 @@ class FakeSipBackend:
         credentials: SipCredentials,
         timeout: float = 30.0,
     ) -> RegistrationResult:
-        """Mark a client as registered if credentials are non-empty."""
+        """Mark a client as registered if credentials are non-empty.
+
+        :param client: Client configuration to register.
+        :param credentials: Resolved SIP credentials.
+        :param timeout: Ignored timeout kept for backend API compatibility.
+        :returns: Fake registration result.
+        :raises BackendError: If either credential field is empty.
+        """
 
         if not credentials.username or not credentials.password:
             raise BackendError(f"Fake registration failed for {client.name}: empty credentials")
@@ -72,7 +92,14 @@ class FakeSipBackend:
         require_reregistration: bool = False,
         min_reregistrations: int = 1,
     ) -> RegistrationWaitResult:
-        """Simulate staying registered without making dry-run scenarios slow."""
+        """Simulate staying registered without making dry-run scenarios slow.
+
+        :param client_name: Logical client name.
+        :param seconds: Requested registration wait duration.
+        :param require_reregistration: Whether refreshes should be reported.
+        :param min_reregistrations: Refresh count to report when refreshes are required.
+        :returns: Fake registration wait result.
+        """
 
         self._require_registered(client_name)
         await asyncio.sleep(min(seconds, 0.05))
@@ -92,7 +119,14 @@ class FakeSipBackend:
         timeout: float = 30.0,
         video: bool = False,
     ) -> CallHandle:
-        """Create an outgoing call and a linked incoming call for simulated clients."""
+        """Create an outgoing call and a linked incoming call for simulated clients.
+
+        :param client_name: Calling logical client name.
+        :param target_uri: Target URI to dial.
+        :param timeout: Ignored timeout kept for backend API compatibility.
+        :param video: Whether to mark simulated video active.
+        :returns: Outgoing call handle.
+        """
 
         self._require_registered(client_name)
         outgoing = CallHandle(
@@ -104,6 +138,8 @@ class FakeSipBackend:
         )
         self.calls[outgoing.id] = outgoing
 
+        # Known client targets get a paired inbound leg so two-party scenarios can
+        # exercise answer, reject, hold, transfer, and hangup without network I/O.
         target_client = self._client_name_for_uri(target_uri)
         if target_client:
             incoming = CallHandle(
@@ -128,7 +164,15 @@ class FakeSipBackend:
         timeout: float = 30.0,
         from_uri: str | None = None,
     ) -> CallHandle:
-        """Wait for a simulated incoming call."""
+        """Wait for a simulated incoming call.
+
+        :param client_name: Receiving logical client name.
+        :param timeout: Maximum wait in seconds.
+        :param from_uri: Optional expected remote URI.
+        :returns: Incoming call handle.
+        :raises BackendError: If the caller URI does not match ``from_uri``.
+        :raises TimeoutError: If no incoming call is queued before timeout.
+        """
 
         self._require_registered(client_name)
         try:
@@ -140,7 +184,12 @@ class FakeSipBackend:
         return call
 
     async def answer(self, call: CallHandle, status_code: int = 200) -> None:
-        """Connect a call and its linked peer."""
+        """Connect a call and its linked peer.
+
+        :param call: Incoming call handle.
+        :param status_code: Ignored SIP status code.
+        :returns: None.
+        """
 
         call.state = "connected"
         call.media_active = True
@@ -150,7 +199,12 @@ class FakeSipBackend:
             peer.media_active = True
 
     async def reject(self, call: CallHandle, status_code: int = 486) -> None:
-        """Reject a call and mark its linked peer disconnected."""
+        """Reject a call and mark its linked peer disconnected.
+
+        :param call: Incoming call handle.
+        :param status_code: Ignored SIP rejection code.
+        :returns: None.
+        """
 
         call.state = "rejected"
         peer = self._linked(call)
@@ -158,7 +212,14 @@ class FakeSipBackend:
             peer.state = "disconnected"
 
     async def wait_call_state(self, call: CallHandle, state: str, timeout: float = 30.0) -> None:
-        """Wait for a call to reach the requested state."""
+        """Wait for a call to reach the requested state.
+
+        :param call: Call handle to observe.
+        :param state: Desired state string.
+        :param timeout: Maximum wait in seconds.
+        :returns: None.
+        :raises TimeoutError: If the state is not reached before timeout.
+        """
 
         deadline = asyncio.get_running_loop().time() + timeout
         while call.state != state:
@@ -167,7 +228,11 @@ class FakeSipBackend:
             await asyncio.sleep(0.01)
 
     async def hangup(self, call: CallHandle) -> None:
-        """Disconnect a call and its linked peer."""
+        """Disconnect a call and its linked peer.
+
+        :param call: Call handle to disconnect.
+        :returns: None.
+        """
 
         call.state = "disconnected"
         call.media_active = False
@@ -177,25 +242,44 @@ class FakeSipBackend:
             peer.media_active = False
 
     async def hold(self, call: CallHandle) -> None:
-        """Mark a call held."""
+        """Mark a call held.
+
+        :param call: Call handle to hold.
+        :returns: None.
+        """
 
         call.state = "held"
         call.media_active = False
 
     async def resume(self, call: CallHandle) -> None:
-        """Resume a held call."""
+        """Resume a held call.
+
+        :param call: Held call handle.
+        :returns: None.
+        """
 
         call.state = "connected"
         call.media_active = True
 
     async def attended_transfer(self, primary_call: CallHandle, consult_call: CallHandle) -> None:
-        """Model an attended transfer as primary transfer and consult disconnect."""
+        """Model an attended transfer as primary transfer and consult disconnect.
+
+        :param primary_call: Original call to transfer.
+        :param consult_call: Consult call that identifies the transfer target.
+        :returns: None.
+        """
 
         primary_call.state = "transferred"
         consult_call.state = "disconnected"
 
     async def play_wav(self, call: CallHandle, path: Path) -> None:
-        """Remember the last file played on the call and linked peer."""
+        """Remember the last file played on the call and linked peer.
+
+        :param call: Call handle that receives playback.
+        :param path: WAV path to play.
+        :returns: None.
+        :raises BackendError: If the WAV file does not exist.
+        """
 
         if not path.exists():
             raise BackendError(f"Audio file does not exist: {path}")
@@ -205,7 +289,13 @@ class FakeSipBackend:
             self.last_played[peer.id] = path
 
     async def record_wav(self, call: CallHandle, output_path: Path, seconds: float) -> None:
-        """Copy the peer's played media or create silence."""
+        """Copy the peer's played media or create silence.
+
+        :param call: Call handle to record.
+        :param output_path: Destination recording path.
+        :param seconds: Duration for silence fallback.
+        :returns: None.
+        """
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         played = self.last_played.get(call.id)
@@ -220,7 +310,13 @@ class FakeSipBackend:
         target_uri: str,
         timeout: float = 30.0,
     ) -> VideoSmokeResult:
-        """Return a deterministic unsupported result for non-simulated targets."""
+        """Return a deterministic unsupported result for non-simulated targets.
+
+        :param client_name: Calling logical client name.
+        :param target_uri: Dialable target URI.
+        :param timeout: Ignored timeout kept for backend API compatibility.
+        :returns: Fake video smoke result.
+        """
 
         self._require_registered(client_name)
         if self._client_name_for_uri(target_uri):
@@ -236,10 +332,23 @@ class FakeSipBackend:
         )
 
     def _require_registered(self, client_name: str) -> None:
+        """Ensure a fake client has been registered.
+
+        :param client_name: Logical client name.
+        :returns: None.
+        :raises BackendError: If the client is not registered.
+        """
+
         if client_name not in self.registered:
             raise BackendError(f"Client is not registered: {client_name}")
 
     def _client_name_for_uri(self, uri: str) -> str | None:
+        """Resolve a SIP URI back to a configured fake client name.
+
+        :param uri: SIP identity URI.
+        :returns: Matching client name, if any.
+        """
+
         if self.config is None:
             return None
         for client in self.config.clients:
@@ -248,10 +357,23 @@ class FakeSipBackend:
         return None
 
     def _client_uri(self, name: str) -> str:
+        """Return a configured fake client's identity URI.
+
+        :param name: Logical client name.
+        :returns: Client SIP identity URI.
+        :raises BackendError: If the backend has not been initialized.
+        """
+
         if self.config is None:
             raise BackendError("Fake backend not initialized")
         return self.config.client(name).id_uri
 
     def _linked(self, call: CallHandle) -> CallHandle | None:
+        """Return the simulated peer call for a linked call leg.
+
+        :param call: Call handle to resolve.
+        :returns: Linked peer call handle, if one exists.
+        """
+
         linked_id = self.linked_calls.get(call.id)
         return self.calls.get(linked_id or "")

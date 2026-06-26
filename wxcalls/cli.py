@@ -29,6 +29,12 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _cmd_preflight(args: argparse.Namespace) -> int:
+    """Run preflight diagnostics and print their status lines.
+
+    :param args: Parsed ``preflight`` command arguments.
+    :returns: Process exit code.
+    """
+
     checks = run_preflight(Path(args.config), env_file=Path(args.env_file) if args.env_file else None)
     for check in checks:
         print(f"{check.status.upper():5} {check.name}: {check.detail}")
@@ -36,7 +42,18 @@ def _cmd_preflight(args: argparse.Namespace) -> int:
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
+    """Run one or more YAML scenarios through a managed call lab.
+
+    :param args: Parsed ``run`` command arguments.
+    :returns: Process exit code.
+    """
+
     async def run() -> None:
+        """Execute the scenario loop inside the async backend lifecycle.
+
+        :returns: None.
+        """
+
         async with lab_from_config(
             config_path=args.config,
             env_file=args.env_file,
@@ -51,6 +68,11 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    """Build the top-level command parser.
+
+    :returns: Configured argument parser.
+    """
+
     parser = argparse.ArgumentParser(prog="wxcalls")
     subparsers = parser.add_subparsers(dest="command")
 
@@ -71,6 +93,7 @@ def _print_progress(message: str) -> None:
     """Print one scenario progress line.
 
     :param message: Progress message from the orchestrator.
+    :returns: None.
     """
 
     print(f"[wxcalls] {message}", flush=True)

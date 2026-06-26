@@ -6,6 +6,12 @@ from wxcalls.preflight import has_failures, run_preflight
 
 
 def test_preflight_reports_missing_credentials_as_failure(tmp_path: Path) -> None:
+    """Verify preflight turns missing credential env vars into a failed check.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
     config_path = tmp_path / "config.yml"
     config_path.write_text(
         """

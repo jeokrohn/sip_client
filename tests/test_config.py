@@ -9,6 +9,12 @@ from wxcalls.config import ConfigError, load_config, load_dotenv
 
 
 def test_load_config_resolves_clients_and_targets(tmp_path: Path) -> None:
+    """Verify config loading resolves clients, targets, DNS, and dotenv secrets.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
     config_path = tmp_path / "config.yml"
     env_path = tmp_path / ".env"
     config_path.write_text(
@@ -41,6 +47,13 @@ targets:
 
 
 def test_load_config_falls_back_to_scutil_nameservers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify empty config nameservers fall back to deduplicated ``scutil`` output.
+
+    :param tmp_path: Temporary pytest directory.
+    :param monkeypatch: Pytest monkeypatch fixture.
+    :returns: None.
+    """
+
     config_path = tmp_path / "config.yml"
     config_path.write_text(
         """
@@ -55,6 +68,14 @@ clients:
     )
 
     def fake_run(args: list[str], *, capture_output: bool, text: bool) -> CompletedProcess[str]:
+        """Return fake ``scutil --dns`` output.
+
+        :param args: Command argument vector.
+        :param capture_output: Whether stdout/stderr capture was requested.
+        :param text: Whether text decoding was requested.
+        :returns: Completed fake process.
+        """
+
         assert args == ["scutil", "--dns"]
         assert capture_output
         assert text
@@ -78,6 +99,13 @@ resolver #2
 
 
 def test_load_config_prefers_configured_nameservers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify configured nameservers suppress the system DNS fallback.
+
+    :param tmp_path: Temporary pytest directory.
+    :param monkeypatch: Pytest monkeypatch fixture.
+    :returns: None.
+    """
+
     config_path = tmp_path / "config.yml"
     config_path.write_text(
         """
@@ -94,6 +122,13 @@ clients:
     )
 
     def fail_run(*args: object, **kwargs: object) -> None:
+        """Fail if the ``scutil`` fallback is invoked.
+
+        :param args: Positional arguments supplied to the fake.
+        :param kwargs: Keyword arguments supplied to the fake.
+        :returns: None.
+        """
+
         pytest.fail("scutil should not be called when nameservers are configured")
 
     monkeypatch.setattr("wxcalls.config.subprocess.run", fail_run)
@@ -104,6 +139,13 @@ clients:
 
 
 def test_missing_credentials_raise_clear_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify missing credential variables raise a clear config error.
+
+    :param tmp_path: Temporary pytest directory.
+    :param monkeypatch: Pytest monkeypatch fixture.
+    :returns: None.
+    """
+
     config_path = tmp_path / "config.yml"
     config_path.write_text(
         """
@@ -125,6 +167,12 @@ clients:
 
 
 def test_load_dotenv_rejects_malformed_line(tmp_path: Path) -> None:
+    """Verify malformed dotenv lines are rejected.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
     env_path = tmp_path / ".env"
     env_path.write_text("NOT_VALID\n", encoding="utf-8")
 

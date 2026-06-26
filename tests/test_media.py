@@ -6,6 +6,12 @@ from wxcalls.media import create_silence_wav, detect_marker, generate_marker_ton
 
 
 def test_marker_tone_is_detected(tmp_path: Path) -> None:
+    """Verify generated marker tones are detectable by marker name.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
     wav_path = tmp_path / "marker.wav"
 
     generate_marker_tone("marker-one", wav_path)
@@ -15,6 +21,12 @@ def test_marker_tone_is_detected(tmp_path: Path) -> None:
 
 
 def test_marker_injection_appends_detectable_tone(tmp_path: Path) -> None:
+    """Verify marker injection adds a detectable tone to a copy.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
     source = tmp_path / "source.wav"
     marked = tmp_path / "marked.wav"
     create_silence_wav(source, seconds=0.2)

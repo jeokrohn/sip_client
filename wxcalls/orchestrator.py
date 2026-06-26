@@ -37,6 +37,7 @@ class CallLab:
         :param artifact_writer: Artifact writer for run outputs.
         :param media_factory: Media generator.
         :param progress_reporter: Optional callback for human-readable progress lines.
+        :returns: None.
         """
 
         self.config = config
@@ -44,6 +45,8 @@ class CallLab:
         self.artifacts = artifact_writer or ArtifactWriter(config.artifacts_dir)
         self.media_factory = media_factory or MediaFactory(self.artifacts.path_for("media", "generated", ""))
         self.progress_reporter = progress_reporter
+        # Scenario steps refer to calls and recordings by logical names; these maps
+        # hold the backend handles and artifact paths behind those names.
         self.calls: dict[str, CallHandle] = {}
         self.registrations: dict[str, RegistrationResult] = {}
         self.recordings: dict[str, Path] = {}
@@ -74,23 +77,44 @@ class CallLab:
         )
 
     async def __aenter__(self) -> CallLab:
+        """Initialize the backend and record startup artifacts.
+
+        :returns: Initialized call lab.
+        """
+
         pjsip_log = self.artifacts.path_for("logs", "pjsip", ".log")
         await self.backend.initialize(self.config, pjsip_log_path=pjsip_log)
         self.artifacts.record_event("backend_initialized", backend=type(self.backend).__name__)
         return self
 
     async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        """Shut down backend resources and finalize artifacts.
+
+        :param exc_type: Exception type from the managed block, if any.
+        :param exc: Exception instance from the managed block, if any.
+        :param tb: Traceback from the managed block, if any.
+        :returns: None.
+        """
+
         await self.backend.shutdown()
         self.artifacts.record_event("backend_shutdown")
         self.artifacts.finalize()
 
     def client(self, name: str) -> Any:
-        """Return a configured client by name."""
+        """Return a configured client by name.
+
+        :param name: Logical client name.
+        :returns: Client configuration.
+        """
 
         return self.config.client(name)
 
     def target(self, name: str) -> Any:
-        """Return a configured target by name."""
+        """Return a configured target by name.
+
+        :param name: Logical target name.
+        :returns: Target configuration.
+        """
 
         return self.config.target(name)
 
@@ -106,6 +130,8 @@ class CallLab:
         if resolved != target or ":" in resolved or "@" in resolved or not resolved.isdecimal():
             return resolved
 
+        # Numeric extension targets are shorthand for SIP URIs at the calling
+        # client's registrar host, matching common Webex Calling lab notation.
         registrar_host = _sip_host(self.config.client(client_name).registrar_uri)
         if registrar_host is None:
             return resolved
@@ -115,6 +141,7 @@ class CallLab:
         """Load and run a scenario file.
 
         :param path: Scenario YAML file.
+        :returns: None.
         """
 
         await self.run_scenario(load_scenario(path))
@@ -123,6 +150,7 @@ class CallLab:
         """Run a parsed scenario.
 
         :param scenario: Scenario to execute.
+        :returns: None.
         """
 
         self.artifacts.record_event("scenario_started", name=scenario.name, source=str(scenario.source or ""))
@@ -135,12 +163,25 @@ class CallLab:
         self.artifacts.record_event("scenario_finished", name=scenario.name)
 
     async def _run_step(self, step: ScenarioStep) -> None:
+        """Dispatch one scenario step to its action handler.
+
+        :param step: Validated scenario step.
+        :returns: None.
+        :raises ScenarioError: If no handler exists for the action.
+        """
+
         handler = getattr(self, f"_step_{step.action}", None)
         if handler is None:
             raise ScenarioError(f"Unsupported action: {step.action}")
         await handler(step.params)
 
     async def _step_register(self, params: dict[str, Any]) -> None:
+        """Run a ``register`` scenario step.
+
+        :param params: Step parameters.
+        :returns: None.
+        """
+
         clients = _as_list(params.get("clients", params.get("client")))
         timeout = float(params.get("timeout", 30.0))
         registered: list[RegistrationResult] = []
@@ -151,10 +192,20 @@ class CallLab:
             registered.append(result)
             self.artifacts.record_event("client_registered", client=client.name, expires=result.expires)
 
+        # Registration soak steps run concurrently so multi-client scenarios keep
+        # both endpoints alive over the same wall-clock interval.
         if _should_stay_registered(params):
             await asyncio.gather(*(self._stay_registered(result, params) for result in registered))
 
     async def _stay_registered(self, result: RegistrationResult, params: dict[str, Any]) -> None:
+        """Keep a registered client alive according to scenario parameters.
+
+        :param result: Initial registration result.
+        :param params: Register step parameters.
+        :returns: None.
+        :raises ScenarioError: If no duration can be derived.
+        """
+
         explicit_seconds = params.get("stay_registered_for")
         if explicit_seconds is None:
             if result.expires is None:
@@ -191,6 +242,12 @@ class CallLab:
         )
 
     async def _step_call(self, params: dict[str, Any]) -> None:
+        """Run a ``call`` scenario step.
+
+        :param params: Step parameters.
+        :returns: None.
+        """
+
         timeout = float(params.get("timeout", 30.0))
         target_uri = self.resolve_call_target(str(params["client"]), str(params["target"]))
         save_as = str(params.get("save_as", "call"))
@@ -207,6 +264,12 @@ class CallLab:
             self._report_call_established(save_as, call)
 
     async def _step_expect_incoming(self, params: dict[str, Any]) -> None:
+        """Run an ``expect_incoming`` scenario step.
+
+        :param params: Step parameters.
+        :returns: None.
+        """
+
         timeout = float(params.get("timeout", 30.0))
         from_uri = params.get("from_uri")
         save_as = str(params.get("save_as", f"{params['client']}_incoming"))
@@ -220,6 +283,12 @@ class CallLab:
         self._progress(f"call received: {call.client_name} <- {call.remote_uri} ({save_as})")
 
     async def _step_answer(self, params: dict[str, Any]) -> None:
+        """Run an ``answer`` scenario step.
+
+        :param params: Step parameters.
+        :returns: None.
+        """
+
         call_ref = str(params["call"])
         call = self._call(call_ref)
         await self.backend.answer(call, status_code=int(params.get("status_code", 200)))
@@ -228,6 +297,12 @@ class CallLab:
             self._report_call_established(call_ref, call)
 
     async def _step_reject(self, params: dict[str, Any]) -> None:
+        """Run a ``reject`` scenario step.
+
+        :param params: Step parameters.
+        :returns: None.
+        """
+
         call_ref = str(params["call"])
         call = self._call(call_ref)
         await self.backend.reject(call, status_code=int(params.get("status_code", 486)))
@@ -235,6 +310,12 @@ class CallLab:
         self._report_call_ended(call_ref, call)
 
     async def _step_wait_state(self, params: dict[str, Any]) -> None:
+        """Run a ``wait_state`` scenario step.
+
+        :param params: Step parameters.
+        :returns: None.
+        """
+
         call_ref = str(params["call"])
         state = str(params["state"])
         call = self._call(call_ref)
@@ -250,7 +331,12 @@ class CallLab:
             self._report_call_ended(call_ref, call)
 
     async def _step_wait_media(self, params: dict[str, Any]) -> None:
-        """Wait until audio media is established for a call."""
+        """Wait until audio media is established for a call.
+
+        :param params: Step parameters.
+        :returns: None.
+        :raises WxTimeoutError: If media is not observed before timeout.
+        """
 
         call = self._call(str(params["call"]))
         timeout = float(params.get("timeout", 30.0))
@@ -265,6 +351,12 @@ class CallLab:
         self.artifacts.record_event("call_media_seen", call=call.id, media="audio")
 
     async def _step_play_tts(self, params: dict[str, Any]) -> None:
+        """Run a ``play_tts`` scenario step.
+
+        :param params: Step parameters.
+        :returns: None.
+        """
+
         call_ref = str(params["call"])
         call = self._call(call_ref)
         asset = self.media_factory.prepare_tts(
@@ -278,6 +370,12 @@ class CallLab:
         self._progress(f"played TTS: {call_ref}")
 
     async def _step_play_wav(self, params: dict[str, Any]) -> None:
+        """Run a ``play_wav`` scenario step.
+
+        :param params: Step parameters.
+        :returns: None.
+        """
+
         call_ref = str(params["call"])
         call = self._call(call_ref)
         asset = self.media_factory.prepare_wav(
@@ -290,6 +388,12 @@ class CallLab:
         self._progress(f"played WAV: {call_ref}")
 
     async def _step_record(self, params: dict[str, Any]) -> None:
+        """Run a ``record`` scenario step.
+
+        :param params: Step parameters.
+        :returns: None.
+        """
+
         call = self._call(str(params["call"]))
         name = str(params.get("save_as", "recording"))
         path = self.artifacts.path_for("media", name, ".wav")
@@ -300,6 +404,14 @@ class CallLab:
         self._progress(f"recorded media: {path}")
 
     async def _step_assert_marker(self, params: dict[str, Any]) -> None:
+        """Run an ``assert_marker`` scenario step.
+
+        :param params: Step parameters.
+        :returns: None.
+        :raises ScenarioError: If the named recording is unknown.
+        :raises BackendError: If the marker cannot be detected.
+        """
+
         recording = self.recordings.get(str(params["recording"]))
         if recording is None:
             raise ScenarioError(f"Unknown recording: {params['recording']}")
@@ -309,25 +421,55 @@ class CallLab:
         self.artifacts.record_event("marker_detected", recording=str(recording), marker=marker)
 
     async def _step_hold(self, params: dict[str, Any]) -> None:
+        """Run a ``hold`` scenario step.
+
+        :param params: Step parameters.
+        :returns: None.
+        """
+
         call = self._call(str(params["call"]))
         await self.backend.hold(call)
         self.artifacts.record_event("call_held", call=call.id)
 
     async def _step_resume(self, params: dict[str, Any]) -> None:
+        """Run a ``resume`` scenario step.
+
+        :param params: Step parameters.
+        :returns: None.
+        """
+
         call = self._call(str(params["call"]))
         await self.backend.resume(call)
         self.artifacts.record_event("call_resumed", call=call.id)
 
     async def _step_consult_call(self, params: dict[str, Any]) -> None:
+        """Run a ``consult_call`` step using the regular call path.
+
+        :param params: Step parameters.
+        :returns: None.
+        """
+
         await self._step_call(params | {"save_as": params.get("save_as", "consult_call")})
 
     async def _step_attended_transfer(self, params: dict[str, Any]) -> None:
+        """Run an ``attended_transfer`` scenario step.
+
+        :param params: Step parameters.
+        :returns: None.
+        """
+
         primary = self._call(str(params["primary_call"]))
         consult = self._call(str(params["consult_call"]))
         await self.backend.attended_transfer(primary, consult)
         self.artifacts.record_event("attended_transfer", primary=primary.id, consult=consult.id)
 
     async def _step_hangup(self, params: dict[str, Any]) -> None:
+        """Run a ``hangup`` scenario step for one or more calls.
+
+        :param params: Step parameters.
+        :returns: None.
+        """
+
         for name in _as_list(params.get("calls", params.get("call"))):
             call_ref = str(name)
             call = self._call(call_ref)
@@ -336,6 +478,13 @@ class CallLab:
             self._report_call_ended(call_ref, call)
 
     async def _step_video_smoke(self, params: dict[str, Any]) -> None:
+        """Run a ``video_smoke`` scenario step.
+
+        :param params: Step parameters.
+        :returns: None.
+        :raises BackendError: If the backend reports a non-skipped video failure.
+        """
+
         result = await self.backend.video_smoke(
             client_name=str(params["client"]),
             target_uri=self.config.resolve_target_uri(str(params["target"])),
@@ -351,22 +500,49 @@ class CallLab:
             raise BackendError(f"Video smoke failed: {result.evidence}")
 
     def _call(self, name: str) -> CallHandle:
+        """Return a call handle saved under a scenario name.
+
+        :param name: Scenario call reference.
+        :returns: Saved call handle.
+        :raises ScenarioError: If the name is unknown.
+        """
+
         try:
             return self.calls[name]
         except KeyError as exc:
             raise ScenarioError(f"Unknown call reference: {name}") from exc
 
     def _progress(self, message: str) -> None:
+        """Emit one progress line if a reporter was provided.
+
+        :param message: Human-readable progress message.
+        :returns: None.
+        """
+
         if self.progress_reporter is not None:
             self.progress_reporter(message)
 
     def _report_call_established(self, call_ref: str, call: CallHandle) -> None:
+        """Report call establishment once per backend call id.
+
+        :param call_ref: Scenario call reference.
+        :param call: Established call handle.
+        :returns: None.
+        """
+
         if call.id in self._reported_established_call_ids:
             return
         self._reported_established_call_ids.add(call.id)
         self._progress(f"call established: {call_ref} {call.client_name} <-> {call.remote_uri}")
 
     def _report_call_ended(self, call_ref: str, call: CallHandle) -> None:
+        """Report call completion once per backend call id.
+
+        :param call_ref: Scenario call reference.
+        :param call: Ended call handle.
+        :returns: None.
+        """
+
         if call.id in self._reported_ended_call_ids:
             return
         self._reported_ended_call_ids.add(call.id)
@@ -416,6 +592,12 @@ async def lab_from_config(
 
 
 def _as_list(value: Any) -> list[Any]:
+    """Normalize a scalar, tuple, list, or missing value into a list.
+
+    :param value: Source value.
+    :returns: List representation.
+    """
+
     if isinstance(value, list | tuple):
         return list(value)
     if value is None:
@@ -424,6 +606,12 @@ def _as_list(value: Any) -> list[Any]:
 
 
 def _should_stay_registered(params: dict[str, Any]) -> bool:
+    """Return whether a register step requests a registration soak.
+
+    :param params: Register step parameters.
+    :returns: ``True`` when the scenario should wait after registration.
+    """
+
     return bool(params.get("stay_registered", False)) or "stay_registered_for" in params
 
 

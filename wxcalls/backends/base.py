@@ -79,10 +79,18 @@ class SipBackend(Protocol):
     """Protocol implemented by SIP/media backends."""
 
     async def initialize(self, config: LabConfig, pjsip_log_path: Path | None = None) -> None:
-        """Initialize backend resources for a lab run."""
+        """Initialize backend resources for a lab run.
+
+        :param config: Parsed lab configuration.
+        :param pjsip_log_path: Optional live-backend PJSIP log path.
+        :returns: None.
+        """
 
     async def shutdown(self) -> None:
-        """Release backend resources."""
+        """Release backend resources.
+
+        :returns: None.
+        """
 
     async def register_client(
         self,
@@ -90,7 +98,13 @@ class SipBackend(Protocol):
         credentials: SipCredentials,
         timeout: float = 30.0,
     ) -> RegistrationResult:
-        """Register one SIP client."""
+        """Register one SIP client.
+
+        :param client: Client configuration to register.
+        :param credentials: Resolved SIP credentials.
+        :param timeout: Maximum registration wait in seconds.
+        :returns: Registration result.
+        """
 
     async def stay_registered(
         self,
@@ -99,7 +113,14 @@ class SipBackend(Protocol):
         require_reregistration: bool = False,
         min_reregistrations: int = 1,
     ) -> RegistrationWaitResult:
-        """Keep a SIP client registered before the next scenario step."""
+        """Keep a SIP client registered before the next scenario step.
+
+        :param client_name: Logical client name.
+        :param seconds: Duration to keep the registration alive.
+        :param require_reregistration: Whether at least one refresh must be observed.
+        :param min_reregistrations: Minimum refresh count when refreshes are required.
+        :returns: Registration wait result.
+        """
 
     async def place_call(
         self,
@@ -108,7 +129,14 @@ class SipBackend(Protocol):
         timeout: float = 30.0,
         video: bool = False,
     ) -> CallHandle:
-        """Place an outgoing call."""
+        """Place an outgoing call.
+
+        :param client_name: Calling logical client name.
+        :param target_uri: Dialable target URI.
+        :param timeout: Maximum call setup wait in seconds.
+        :param video: Whether to offer video media.
+        :returns: Created call handle.
+        """
 
     async def wait_for_incoming(
         self,
@@ -116,34 +144,84 @@ class SipBackend(Protocol):
         timeout: float = 30.0,
         from_uri: str | None = None,
     ) -> CallHandle:
-        """Wait for an incoming call."""
+        """Wait for an incoming call.
+
+        :param client_name: Logical client expected to receive the call.
+        :param timeout: Maximum wait in seconds.
+        :param from_uri: Optional expected remote URI.
+        :returns: Incoming call handle.
+        """
 
     async def answer(self, call: CallHandle, status_code: int = 200) -> None:
-        """Answer an incoming call."""
+        """Answer an incoming call.
+
+        :param call: Incoming call handle.
+        :param status_code: SIP status code to answer with.
+        :returns: None.
+        """
 
     async def reject(self, call: CallHandle, status_code: int = 486) -> None:
-        """Reject an incoming call."""
+        """Reject an incoming call.
+
+        :param call: Incoming call handle.
+        :param status_code: SIP status code to reject with.
+        :returns: None.
+        """
 
     async def wait_call_state(self, call: CallHandle, state: str, timeout: float = 30.0) -> None:
-        """Wait until a call reaches a state."""
+        """Wait until a call reaches a state.
+
+        :param call: Call handle to observe.
+        :param state: Backend-neutral state name.
+        :param timeout: Maximum wait in seconds.
+        :returns: None.
+        """
 
     async def hangup(self, call: CallHandle) -> None:
-        """Hang up a call."""
+        """Hang up a call.
+
+        :param call: Call handle to disconnect.
+        :returns: None.
+        """
 
     async def hold(self, call: CallHandle) -> None:
-        """Put a call on hold."""
+        """Put a call on hold.
+
+        :param call: Call handle to hold.
+        :returns: None.
+        """
 
     async def resume(self, call: CallHandle) -> None:
-        """Resume a held call."""
+        """Resume a held call.
+
+        :param call: Held call handle.
+        :returns: None.
+        """
 
     async def attended_transfer(self, primary_call: CallHandle, consult_call: CallHandle) -> None:
-        """Transfer the primary call to the consult call target."""
+        """Transfer the primary call to the consult call target.
+
+        :param primary_call: Original call to transfer.
+        :param consult_call: Consult call identifying the transfer target.
+        :returns: None.
+        """
 
     async def play_wav(self, call: CallHandle, path: Path) -> None:
-        """Play a WAV file into a call leg."""
+        """Play a WAV file into a call leg.
+
+        :param call: Call handle to play into.
+        :param path: WAV file path.
+        :returns: None.
+        """
 
     async def record_wav(self, call: CallHandle, output_path: Path, seconds: float) -> None:
-        """Record audio from a call leg to a WAV file."""
+        """Record audio from a call leg to a WAV file.
+
+        :param call: Call handle to record.
+        :param output_path: Destination WAV path.
+        :param seconds: Recording duration.
+        :returns: None.
+        """
 
     async def video_smoke(
         self,
@@ -151,4 +229,10 @@ class SipBackend(Protocol):
         target_uri: str,
         timeout: float = 30.0,
     ) -> VideoSmokeResult:
-        """Attempt a video smoke probe."""
+        """Attempt a video smoke probe.
+
+        :param client_name: Calling logical client name.
+        :param target_uri: Dialable target URI.
+        :param timeout: Maximum call setup wait in seconds.
+        :returns: Video smoke result.
+        """

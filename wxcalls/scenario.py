@@ -25,6 +25,8 @@ class ScenarioStep:
     index: int
 
     REQUIRED_BY_ACTION: ClassVar[dict[str, tuple[str, ...]]] = {
+        # The scenario schema is deliberately action-centric: each action owns the
+        # minimal fields needed by its orchestrator step handler.
         "register": (),
         "call": ("client", "target"),
         "expect_incoming": ("client",),
@@ -124,6 +126,15 @@ def parse_scenario(raw: Any, source: Path | None = None) -> Scenario:
 
 
 def _validate_common_fields(action: str, params: dict[str, Any], index: int) -> None:
+    """Validate fields shared by multiple scenario actions.
+
+    :param action: Scenario action name.
+    :param params: Step parameters after action/type removal.
+    :param index: One-based step index for error messages.
+    :returns: None.
+    :raises ScenarioError: If shared fields are invalid.
+    """
+
     timeout = params.get("timeout")
     if timeout is not None and (not isinstance(timeout, int | float) or timeout <= 0):
         raise ScenarioError(f"Step {index} action {action!r} timeout must be a positive number")

@@ -24,13 +24,21 @@ class ArtifactWriter:
     timeline: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
+        """Create the run directory after dataclass initialization.
+
+        :returns: None.
+        """
+
         if self.run_id is None:
             self.run_id = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%SZ")
         self.run_dir.mkdir(parents=True, exist_ok=True)
 
     @property
     def run_dir(self) -> Path:
-        """Directory containing artifacts for this run."""
+        """Directory containing artifacts for this run.
+
+        :returns: Path to this run's artifact directory.
+        """
 
         return self.root / str(self.run_id)
 
@@ -53,8 +61,11 @@ class ArtifactWriter:
 
         :param event: Event type.
         :param data: Event details.
+        :returns: None.
         """
 
+        # Timeline events are intentionally plain JSON so scenario runs can be inspected
+        # without importing project code.
         self.timeline.append(
             {
                 "ts": datetime.now(tz=UTC).isoformat(),

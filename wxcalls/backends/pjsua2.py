@@ -24,6 +24,11 @@ class Pjsua2SipBackend:
     """Live SIP backend implemented with PJSUA2 Python bindings."""
 
     def __init__(self) -> None:
+        """Create an uninitialized PJSUA2 backend adapter.
+
+        :returns: None.
+        """
+
         self.pj: Any | None = None
         self.endpoint: Any | None = None
         self.config: LabConfig | None = None
@@ -34,7 +39,13 @@ class Pjsua2SipBackend:
         self.call_handles: dict[str, CallHandle] = {}
 
     async def initialize(self, config: LabConfig, pjsip_log_path: Path | None = None) -> None:
-        """Initialize PJSUA2 endpoint, transport, and polling."""
+        """Initialize PJSUA2 endpoint, transport, and polling.
+
+        :param config: Parsed lab configuration.
+        :param pjsip_log_path: Optional PJSIP log file path.
+        :returns: None.
+        :raises BackendError: If PJSUA2 bindings are not importable.
+        """
 
         try:
             import pjsua2 as pj  # type: ignore[import-not-found]
@@ -49,6 +60,8 @@ class Pjsua2SipBackend:
         self.endpoint = pj.Endpoint()
         self.endpoint.libCreate()
 
+        # PJSUA2 callbacks are driven from the asyncio loop by explicit polling
+        # rather than background worker threads.
         ep_cfg = pj.EpConfig()
         ep_cfg.uaConfig.threadCnt = 0
         ep_cfg.uaConfig.mainThreadOnly = True
@@ -72,7 +85,10 @@ class Pjsua2SipBackend:
         self.poll_task = asyncio.create_task(self._poll_events())
 
     async def shutdown(self) -> None:
-        """Destroy PJSUA2 resources."""
+        """Destroy PJSUA2 resources.
+
+        :returns: None.
+        """
 
         if self.poll_task:
             self.poll_task.cancel()
@@ -91,7 +107,13 @@ class Pjsua2SipBackend:
         credentials: SipCredentials,
         timeout: float = 30.0,
     ) -> RegistrationResult:
-        """Create and register a PJSUA2 account."""
+        """Create and register a PJSUA2 account.
+
+        :param client: Client configuration to register.
+        :param credentials: Resolved SIP credentials.
+        :param timeout: Maximum registration wait in seconds.
+        :returns: Registration result.
+        """
 
         self._require_ready()
         pj = self.pj
@@ -119,12 +141,22 @@ class Pjsua2SipBackend:
         require_reregistration: bool = False,
         min_reregistrations: int = 1,
     ) -> RegistrationWaitResult:
-        """Keep an account alive and count successful registration refreshes."""
+        """Keep an account alive and count successful registration refreshes.
+
+        :param client_name: Logical client name.
+        :param seconds: Duration to observe registration events.
+        :param require_reregistration: Whether refreshes are required.
+        :param min_reregistrations: Minimum refresh count when required.
+        :returns: Registration wait result.
+        :raises WxTimeoutError: If required refreshes are not observed.
+        """
 
         account = self._account(client_name)
         baseline_count = account.successful_registration_count
         deadline = asyncio.get_running_loop().time() + seconds
 
+        # PJSUA2 emits registration callbacks for both the initial REGISTER and
+        # later refreshes; the baseline count separates refreshes from setup.
         while True:
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
@@ -155,7 +187,14 @@ class Pjsua2SipBackend:
         timeout: float = 30.0,
         video: bool = False,
     ) -> CallHandle:
-        """Place an outgoing call through a registered PJSUA2 account."""
+        """Place an outgoing call through a registered PJSUA2 account.
+
+        :param client_name: Calling logical client name.
+        :param target_uri: Dialable SIP target URI.
+        :param timeout: Maximum call setup wait in seconds.
+        :param video: Whether to offer a video media stream.
+        :returns: Connected call handle.
+        """
 
         account = self._account(client_name)
         pj_call = _create_call_adapter(self, account)
@@ -177,7 +216,15 @@ class Pjsua2SipBackend:
         timeout: float = 30.0,
         from_uri: str | None = None,
     ) -> CallHandle:
-        """Wait for an incoming PJSUA2 call."""
+        """Wait for an incoming PJSUA2 call.
+
+        :param client_name: Receiving logical client name.
+        :param timeout: Maximum wait in seconds.
+        :param from_uri: Optional expected remote URI.
+        :returns: Incoming call handle.
+        :raises BackendError: If ``from_uri`` does not match.
+        :raises WxTimeoutError: If no call arrives before timeout.
+        """
 
         account = self._account(client_name)
         try:
@@ -189,7 +236,12 @@ class Pjsua2SipBackend:
         return handle
 
     async def answer(self, call: CallHandle, status_code: int = 200) -> None:
-        """Answer an incoming call."""
+        """Answer an incoming call.
+
+        :param call: Incoming call handle.
+        :param status_code: SIP status code to answer with.
+        :returns: None.
+        """
 
         prm = self.pj.CallOpParam(True)
         prm.statusCode = int(status_code)
@@ -198,26 +250,45 @@ class Pjsua2SipBackend:
         await self.wait_call_state(call, "connected", timeout=30.0)
 
     async def reject(self, call: CallHandle, status_code: int = 486) -> None:
-        """Reject an incoming call."""
+        """Reject an incoming call.
+
+        :param call: Incoming call handle.
+        :param status_code: SIP status code to reject with.
+        :returns: None.
+        """
 
         prm = self.pj.CallOpParam()
         prm.statusCode = int(status_code)
         self._call(call).hangup(prm)
 
     async def wait_call_state(self, call: CallHandle, state: str, timeout: float = 30.0) -> None:
-        """Wait for a PJSUA2 call state."""
+        """Wait for a PJSUA2 call state.
+
+        :param call: Call handle to observe.
+        :param state: Backend-neutral state name.
+        :param timeout: Maximum wait in seconds.
+        :returns: None.
+        """
 
         pj_call = self._call(call)
         await pj_call.wait_state(state, timeout)
 
     async def hangup(self, call: CallHandle) -> None:
-        """Hang up a call."""
+        """Hang up a call.
+
+        :param call: Call handle to disconnect.
+        :returns: None.
+        """
 
         prm = self.pj.CallOpParam()
         self._call(call).hangup(prm)
 
     async def hold(self, call: CallHandle) -> None:
-        """Place a call on hold."""
+        """Place a call on hold.
+
+        :param call: Call handle to hold.
+        :returns: None.
+        """
 
         prm = self.pj.CallOpParam(True)
         _set_call_media_counts(prm, video_count=1 if call.video_active else 0, text_count=0)
@@ -225,7 +296,11 @@ class Pjsua2SipBackend:
         call.state = "held"
 
     async def resume(self, call: CallHandle) -> None:
-        """Resume a held call using re-INVITE."""
+        """Resume a held call using re-INVITE.
+
+        :param call: Held call handle.
+        :returns: None.
+        """
 
         prm = self.pj.CallOpParam(True)
         _set_call_media_counts(prm, video_count=1 if call.video_active else 0, text_count=0)
@@ -233,7 +308,13 @@ class Pjsua2SipBackend:
         await self.wait_call_state(call, "connected", timeout=30.0)
 
     async def attended_transfer(self, primary_call: CallHandle, consult_call: CallHandle) -> None:
-        """Perform an attended transfer with ``xferReplaces``."""
+        """Perform an attended transfer with ``xferReplaces``.
+
+        :param primary_call: Original call to transfer.
+        :param consult_call: Consult call that identifies the transfer target.
+        :returns: None.
+        :raises UnsupportedFeature: If the PJSUA2 binding lacks ``xferReplaces``.
+        """
 
         primary = self._call(primary_call)
         consult = self._call(consult_call)
@@ -244,7 +325,13 @@ class Pjsua2SipBackend:
         primary_call.state = "transferred"
 
     async def play_wav(self, call: CallHandle, path: Path) -> None:
-        """Play a WAV file into a connected call."""
+        """Play a WAV file into a connected call.
+
+        :param call: Connected call handle.
+        :param path: WAV path to play.
+        :returns: None.
+        :raises BackendError: If no active audio media is available.
+        """
 
         pj_call = self._call(call)
         await _wait_for_audio_media_quiet(pj_call, quiet_seconds=1.0, timeout=5.0)
@@ -252,6 +339,8 @@ class Pjsua2SipBackend:
         if audio_media is None:
             raise BackendError(f"Call {call.id} has no active audio media")
         duration = _wav_duration_seconds(path)
+        # PJSUA2 audio ports can change after re-INVITE/media updates; the player
+        # adapter tracks EOF and can be rerouted by media callbacks.
         player = _create_audio_player_adapter(self, audio_media)
         flags = getattr(self.pj, "PJMEDIA_FILE_NO_LOOP", 0)
         player.createPlayer(str(path), flags)
@@ -271,7 +360,14 @@ class Pjsua2SipBackend:
                 pj_call.players.remove(player)
 
     async def record_wav(self, call: CallHandle, output_path: Path, seconds: float) -> None:
-        """Record call audio to a WAV file."""
+        """Record call audio to a WAV file.
+
+        :param call: Connected call handle.
+        :param output_path: Destination WAV path.
+        :param seconds: Recording duration in seconds.
+        :returns: None.
+        :raises BackendError: If no active audio media exists or recording cleanup fails.
+        """
 
         pj_call = self._call(call)
         audio_media = _active_audio_media(self.pj, pj_call)
@@ -304,7 +400,13 @@ class Pjsua2SipBackend:
         target_uri: str,
         timeout: float = 30.0,
     ) -> VideoSmokeResult:
-        """Place a video-offering call and report whether video became active."""
+        """Place a video-offering call and report whether video became active.
+
+        :param client_name: Calling logical client name.
+        :param target_uri: Dialable SIP target URI.
+        :param timeout: Maximum call setup wait in seconds.
+        :returns: Video smoke result.
+        """
 
         try:
             call = await self.place_call(client_name, target_uri, timeout=timeout, video=True)
@@ -326,16 +428,36 @@ class Pjsua2SipBackend:
             await self.hangup(call)
 
     def _require_ready(self) -> None:
+        """Ensure the PJSUA2 endpoint has been initialized.
+
+        :returns: None.
+        :raises BackendError: If required backend fields are unavailable.
+        """
+
         if self.pj is None or self.endpoint is None or self.loop is None:
             raise BackendError("PJSUA2 backend has not been initialized")
 
     def _account(self, client_name: str) -> Any:
+        """Return a registered PJSUA2 account adapter.
+
+        :param client_name: Logical client name.
+        :returns: Account adapter.
+        :raises BackendError: If the client has not been registered.
+        """
+
         try:
             return self.accounts[client_name]
         except KeyError as exc:
             raise BackendError(f"Client is not registered: {client_name}") from exc
 
     def _call(self, call: CallHandle) -> Any:
+        """Return the PJSUA2 call adapter for a neutral call handle.
+
+        :param call: Backend-neutral call handle.
+        :returns: PJSUA2 call adapter.
+        :raises BackendError: If the handle is unknown.
+        """
+
         try:
             return self.calls[call.id]
         except KeyError as exc:
@@ -348,6 +470,15 @@ class Pjsua2SipBackend:
         remote_uri: str,
         state: str,
     ) -> CallHandle:
+        """Create and register a backend-neutral call handle for a PJSUA2 call.
+
+        :param pj_call: PJSUA2 call adapter.
+        :param client_name: Local logical client name.
+        :param remote_uri: Remote party URI.
+        :param state: Initial backend-neutral call state.
+        :returns: Created call handle.
+        """
+
         call_id = f"pjsua2-{uuid4()}"
         handle = CallHandle(id=call_id, client_name=client_name, remote_uri=remote_uri, state=state)
         pj_call.handle_id = call_id
@@ -356,6 +487,11 @@ class Pjsua2SipBackend:
         return handle
 
     def _try_set_null_audio_device(self) -> None:
+        """Prefer PJSUA2's null audio device when the binding supports it.
+
+        :returns: None.
+        """
+
         try:
             self.endpoint.audDevManager().setNullDev()
         except Exception:
@@ -364,6 +500,13 @@ class Pjsua2SipBackend:
             return
 
     def _transport_type(self, transport: str) -> Any:
+        """Resolve a transport label to a PJSUA2 transport constant.
+
+        :param transport: Transport label from client config.
+        :returns: PJSUA2 transport constant.
+        :raises BackendError: If the transport is unavailable.
+        """
+
         pj = self.pj
         mapping = {
             "udp": "PJSIP_TRANSPORT_UDP",
@@ -376,7 +519,10 @@ class Pjsua2SipBackend:
         return getattr(pj, attr)
 
     def _release_media_objects(self) -> None:
-        """Release retained PJSUA2 media objects before endpoint destruction."""
+        """Release retained PJSUA2 media objects before endpoint destruction.
+
+        :returns: None.
+        """
 
         for pj_call in self.calls.values():
             players = getattr(pj_call, "players", None)
@@ -389,6 +535,11 @@ class Pjsua2SipBackend:
                 recorders.clear()
 
     async def _poll_events(self) -> None:
+        """Pump PJSUA2 events from the asyncio loop.
+
+        :returns: None.
+        """
+
         self._require_ready()
         while True:
             self.endpoint.libHandleEvents(50)
@@ -396,12 +547,22 @@ class Pjsua2SipBackend:
 
 
 def _create_account_adapter(backend: Pjsua2SipBackend, client_name: str) -> Any:
-    """Create a concrete ``pj.Account`` subclass with Python callbacks."""
+    """Create a concrete ``pj.Account`` subclass with Python callbacks.
+
+    :param backend: Owning PJSUA2 backend.
+    :param client_name: Logical client name.
+    :returns: Account adapter instance.
+    """
 
     pj = backend.pj
 
     class AccountAdapter(pj.Account):  # type: ignore[name-defined,misc]
         def __init__(self) -> None:
+            """Create account callback state.
+
+            :returns: None.
+            """
+
             super().__init__()
             self.backend = backend
             self.client_name = client_name
@@ -412,7 +573,11 @@ def _create_account_adapter(backend: Pjsua2SipBackend, client_name: str) -> Any:
             self.incoming: asyncio.Queue[CallHandle] = asyncio.Queue()
 
         def onRegState(self, prm: Any) -> None:  # noqa: N802 - PJSUA2 callback name
-            """PJSUA2 callback for SIP registration state."""
+            """PJSUA2 callback for SIP registration state.
+
+            :param prm: PJSUA2 registration callback parameter.
+            :returns: None.
+            """
 
             try:
                 info = self.getInfo()
@@ -424,6 +589,8 @@ def _create_account_adapter(backend: Pjsua2SipBackend, client_name: str) -> Any:
                 code = 0
                 expiration = 0
             if is_active and 200 <= code < 300:
+                # Registration callbacks may originate from PJSUA2 internals; all
+                # asyncio primitives are updated through the owning event loop.
                 result = RegistrationResult(
                     client_name=self.client_name,
                     expires=expiration or None,
@@ -435,7 +602,11 @@ def _create_account_adapter(backend: Pjsua2SipBackend, client_name: str) -> Any:
                 self.backend.loop.call_soon_threadsafe(self.registered.set)
 
         def onIncomingCall(self, prm: Any) -> None:  # noqa: N802 - PJSUA2 callback name
-            """PJSUA2 callback for incoming calls."""
+            """PJSUA2 callback for incoming calls.
+
+            :param prm: PJSUA2 incoming-call callback parameter.
+            :returns: None.
+            """
 
             call = _create_call_adapter(self.backend, self, prm.callId)
             remote_uri = call.safe_remote_uri()
@@ -447,8 +618,13 @@ def _create_account_adapter(backend: Pjsua2SipBackend, client_name: str) -> Any:
             )
             self.backend.loop.call_soon_threadsafe(self.incoming.put_nowait, handle)
 
-        async def wait_registered(self, timeout: float) -> None:
-            """Wait until account registration succeeds."""
+        async def wait_registered(self, timeout: float) -> RegistrationResult:
+            """Wait until account registration succeeds.
+
+            :param timeout: Maximum registration wait in seconds.
+            :returns: Registration result from the successful callback.
+            :raises WxTimeoutError: If registration does not succeed before timeout.
+            """
 
             try:
                 return await asyncio.wait_for(self.registration_events.get(), timeout=timeout)
@@ -463,12 +639,23 @@ def _create_call_adapter(
     account: Any,
     call_id: int | None = None,
 ) -> Any:
-    """Create a concrete ``pj.Call`` subclass with Python callbacks."""
+    """Create a concrete ``pj.Call`` subclass with Python callbacks.
+
+    :param backend: Owning PJSUA2 backend.
+    :param account: Account adapter that owns the call.
+    :param call_id: Optional incoming PJSUA2 call id.
+    :returns: Call adapter instance.
+    """
 
     pj = backend.pj
 
     class CallAdapter(pj.Call):  # type: ignore[name-defined,misc]
         def __init__(self) -> None:
+            """Create call callback state.
+
+            :returns: None.
+            """
+
             if call_id is None:
                 super().__init__(account)
             else:
@@ -484,7 +671,11 @@ def _create_call_adapter(
             self.last_media_update_at = 0.0
 
         def onCallState(self, prm: Any) -> None:  # noqa: N802 - PJSUA2 callback name
-            """PJSUA2 callback for call-state changes."""
+            """PJSUA2 callback for call-state changes.
+
+            :param prm: PJSUA2 call-state callback parameter.
+            :returns: None.
+            """
 
             handle = self._handle()
             if handle is None:
@@ -495,7 +686,11 @@ def _create_call_adapter(
             self.backend.loop.call_soon_threadsafe(event.set)
 
         def onCallMediaState(self, prm: Any) -> None:  # noqa: N802 - PJSUA2 callback name
-            """PJSUA2 callback for media-state changes."""
+            """PJSUA2 callback for media-state changes.
+
+            :param prm: PJSUA2 media-state callback parameter.
+            :returns: None.
+            """
 
             handle = self._handle()
             if handle is None:
@@ -504,6 +699,8 @@ def _create_call_adapter(
                 self.media_update_seq += 1
                 self.last_media_update_at = self.backend.loop.time()
                 info = self.getInfo()
+                # Media callbacks are the source of truth for active audio/video
+                # and for rerouting players when PJSUA2 changes conference ports.
                 for index, media in enumerate(info.media):
                     media_type = getattr(media, "type", None)
                     status = getattr(media, "status", None)
@@ -517,7 +714,13 @@ def _create_call_adapter(
                 return
 
         async def wait_state(self, state: str, timeout: float) -> None:
-            """Wait for the call to reach a normalized state."""
+            """Wait for the call to reach a normalized state.
+
+            :param state: Backend-neutral state name.
+            :param timeout: Maximum wait in seconds.
+            :returns: None.
+            :raises WxTimeoutError: If the state is not reached before timeout.
+            """
 
             handle = self._handle()
             if handle and handle.state == state:
@@ -529,7 +732,10 @@ def _create_call_adapter(
                 raise WxTimeoutError(f"Timed out waiting for call to reach {state}") from exc
 
         def safe_remote_uri(self) -> str:
-            """Return remote URI if available."""
+            """Return remote URI if available.
+
+            :returns: Remote URI, or ``unknown`` when PJSUA2 cannot provide it.
+            """
 
             try:
                 return str(self.getInfo().remoteUri)
@@ -537,11 +743,21 @@ def _create_call_adapter(
                 return "unknown"
 
         def _handle(self) -> CallHandle | None:
+            """Return the backend-neutral handle for this call adapter.
+
+            :returns: Matching call handle, if registered.
+            """
+
             if self.handle_id is None:
                 return None
             return self.backend.call_handles.get(self.handle_id)
 
         def _normalized_state(self) -> str:
+            """Normalize PJSUA2 state text into the backend state vocabulary.
+
+            :returns: Backend-neutral call state.
+            """
+
             try:
                 info = self.getInfo()
                 state_text = str(getattr(info, "stateText", "")).lower()
@@ -561,6 +777,13 @@ def _create_call_adapter(
 
 
 def _set_video_count(config_or_param: Any, count: int) -> None:
+    """Enable or disable automatic video behavior on a PJSUA2 object.
+
+    :param config_or_param: PJSUA2 account or call configuration object.
+    :param count: Requested video stream count.
+    :returns: None.
+    """
+
     video_config = getattr(config_or_param, "videoConfig", None)
     if video_config is not None and hasattr(video_config, "autoShowIncoming"):
         video_config.autoShowIncoming = count > 0
@@ -573,6 +796,7 @@ def _configure_srtp(account_config: Any, pj: Any) -> None:
 
     :param account_config: PJSUA2 account configuration object.
     :param pj: Imported ``pjsua2`` module.
+    :returns: None.
     :raises BackendError: If the PJSUA2 binding does not expose SRTP controls.
     """
 
@@ -610,6 +834,7 @@ def _validate_secure_signaling_for_mandatory_srtp(client: SipClientConfig) -> No
     """Validate that a live client uses secure signaling with mandatory SRTP.
 
     :param client: SIP client configuration.
+    :returns: None.
     :raises BackendError: If the client is not configured for TLS/SIPS signaling.
     """
 
@@ -625,6 +850,7 @@ def _clear_vector(vector: Any) -> None:
     """Clear a PJSUA2 SWIG vector or Python list.
 
     :param vector: Vector-like object.
+    :returns: None.
     """
 
     if hasattr(vector, "clear"):
@@ -674,6 +900,7 @@ async def _wait_for_audio_media_quiet(pj_call: Any, quiet_seconds: float, timeou
     :param pj_call: PJSUA2 call adapter.
     :param quiet_seconds: Required quiet period before returning.
     :param timeout: Maximum time to wait for quiescence.
+    :returns: None.
     """
 
     if not hasattr(pj_call, "media_update_seq"):
@@ -711,6 +938,11 @@ def _create_audio_player_adapter(backend: Pjsua2SipBackend, audio_media: Any) ->
             """PJSUA2 player that marks EOF and stops its bridge route."""
 
             def __init__(self) -> None:
+                """Create playback bookkeeping state.
+
+                :returns: None.
+                """
+
                 super().__init__()
                 self.wxcalls_eof = asyncio.Event()
                 self.wxcalls_transmitting = False
@@ -718,7 +950,10 @@ def _create_audio_player_adapter(backend: Pjsua2SipBackend, audio_media: Any) ->
                 self.wxcalls_loop = backend.loop
 
             def onEof2(self) -> None:  # noqa: N802 - PJSUA2 callback name
-                """PJSUA2 callback fired when one-shot WAV playback reaches EOF."""
+                """PJSUA2 callback fired when one-shot WAV playback reaches EOF.
+
+                :returns: None.
+                """
 
                 _stop_audio_player(self)
 
@@ -737,6 +972,7 @@ def _reroute_audio_players(pj_call: Any, audio_media: Any) -> None:
 
     :param pj_call: PJSUA2 call adapter.
     :param audio_media: New active call audio media.
+    :returns: None.
     """
 
     port_id = _audio_media_port_id(audio_media)
@@ -756,6 +992,7 @@ def _start_audio_player_route(player: Any, audio_media: Any) -> None:
 
     :param player: PJSUA2 audio player.
     :param audio_media: Destination call audio media.
+    :returns: None.
     """
 
     player.wxcalls_audio_media = audio_media
@@ -772,6 +1009,7 @@ def _mark_audio_player_transmitting(player: Any, transmitting: bool) -> None:
 
     :param player: PJSUA2 audio player.
     :param transmitting: Current route state.
+    :returns: None.
     """
 
     with suppress(Exception):
@@ -782,6 +1020,7 @@ def _stop_audio_player(player: Any) -> None:
     """Stop player transmission and signal EOF/cleanup waiters.
 
     :param player: PJSUA2 audio player.
+    :returns: None.
     """
 
     audio_media = getattr(player, "wxcalls_audio_media", None)
@@ -822,6 +1061,7 @@ def _set_audio_player_eof(player: Any) -> None:
     """Signal a player's EOF event on its owning asyncio loop.
 
     :param player: PJSUA2 audio player.
+    :returns: None.
     """
 
     event = getattr(player, "wxcalls_eof", None)
@@ -873,6 +1113,7 @@ async def _wait_until_playback_finishes(player: Any, call: CallHandle, seconds: 
     :param player: PJSUA2 audio player.
     :param call: Call being played into.
     :param seconds: Maximum playback wait in seconds.
+    :returns: None.
     """
 
     eof_event = getattr(player, "wxcalls_eof", None)
@@ -897,6 +1138,7 @@ def _set_call_media_counts(call_param: Any, video_count: int, text_count: int) -
     :param call_param: PJSUA2 call operation parameter.
     :param video_count: Number of video streams to offer.
     :param text_count: Number of text streams to offer.
+    :returns: None.
     """
 
     opt = getattr(call_param, "opt", None)
@@ -914,10 +1156,24 @@ def _set_call_media_counts(call_param: Any, video_count: int, text_count: int) -
 
 
 def _is_audio_type(pj: Any, media_type: Any) -> bool:
+    """Return whether a media type is PJSUA2 audio.
+
+    :param pj: Imported ``pjsua2`` module.
+    :param media_type: Media type value from PJSUA2.
+    :returns: ``True`` when the media type is audio.
+    """
+
     return hasattr(pj, "PJMEDIA_TYPE_AUDIO") and media_type == pj.PJMEDIA_TYPE_AUDIO
 
 
 def _is_video_type(pj: Any, media_type: Any) -> bool:
+    """Return whether a media type is PJSUA2 video.
+
+    :param pj: Imported ``pjsua2`` module.
+    :param media_type: Media type value from PJSUA2.
+    :returns: ``True`` when the media type is video.
+    """
+
     return hasattr(pj, "PJMEDIA_TYPE_VIDEO") and media_type == pj.PJMEDIA_TYPE_VIDEO
 
 

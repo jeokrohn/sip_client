@@ -38,6 +38,7 @@ class MediaFactory:
 
         :param work_dir: Directory for generated media.
         :param sample_rate: Output sample rate for generated WAV assets.
+        :returns: None.
         """
 
         self.work_dir = work_dir
@@ -87,6 +88,7 @@ def generate_tts_wav(
     :param marker: Optional marker identifier to append.
     :param voice: Optional macOS voice name.
     :param sample_rate: Output sample rate.
+    :returns: None.
     :raises MediaError: If required macOS tools are unavailable or synthesis fails.
     """
 
@@ -101,6 +103,8 @@ def generate_tts_wav(
     with tempfile.TemporaryDirectory() as tmp:
         aiff_path = Path(tmp) / "speech.aiff"
         speech_wav = Path(tmp) / "speech.wav"
+        # macOS ``say`` writes AIFF reliably, then ``afconvert`` normalizes it to
+        # the mono PCM format expected by the SIP backends and marker detector.
         say_cmd = [say_path, "-o", str(aiff_path)]
         if voice:
             say_cmd.extend(["-v", voice])
@@ -140,6 +144,7 @@ def generate_marker_tone(
     :param duration: Tone duration in seconds.
     :param sample_rate: Output sample rate.
     :param amplitude: Tone amplitude from 0.0 to 1.0.
+    :returns: None.
     """
 
     frequency = marker_frequency(marker)
@@ -160,6 +165,7 @@ def create_silence_wav(output_path: Path, seconds: float, sample_rate: int = DEF
     :param output_path: Destination WAV path.
     :param seconds: Duration in seconds.
     :param sample_rate: Output sample rate.
+    :returns: None.
     """
 
     frame_count = int(seconds * sample_rate)
@@ -183,6 +189,7 @@ def inject_marker(
     :param output_path: Destination WAV file.
     :param marker: Marker identifier.
     :param sample_rate: Expected output sample rate for generated marker.
+    :returns: None.
     :raises MediaError: If source WAV parameters are unsupported.
     """
 
@@ -197,11 +204,14 @@ def concatenate_wavs(paths: list[Path], output_path: Path) -> None:
 
     :param paths: Source WAV files in output order.
     :param output_path: Destination WAV file.
+    :returns: None.
     :raises MediaError: If input files do not share compatible parameters.
     """
 
     if not paths:
         raise MediaError("At least one WAV file is required")
+    # Preserve the first file's exact WAV parameters so generated and supplied media
+    # can be concatenated without changing timing or sample format.
     params = None
     frames: list[bytes] = []
     for path in paths:
@@ -250,6 +260,13 @@ def marker_frequency(marker: str) -> int:
 
 
 def _read_mono_int16(path: Path) -> tuple[list[int], int]:
+    """Read a mono 16-bit PCM WAV into integer samples.
+
+    :param path: WAV path to read.
+    :returns: Samples and sample rate.
+    :raises MediaError: If the WAV format is unsupported.
+    """
+
     with wave.open(str(path), "rb") as wav:
         if wav.getnchannels() != DEFAULT_CHANNELS or wav.getsampwidth() != DEFAULT_SAMPLE_WIDTH:
             raise MediaError(f"Unsupported WAV format for marker detection: {path}")
@@ -260,6 +277,14 @@ def _read_mono_int16(path: Path) -> tuple[list[int], int]:
 
 
 def _goertzel_power(samples: list[int], sample_rate: int, frequency: float) -> float:
+    """Compute single-bin tone power with the Goertzel algorithm.
+
+    :param samples: PCM samples.
+    :param sample_rate: Sample rate in hertz.
+    :param frequency: Frequency to measure in hertz.
+    :returns: Relative tone power for the requested frequency.
+    """
+
     normalized = frequency / sample_rate
     coefficient = 2 * math.cos(2 * math.pi * normalized)
     prev = 0.0
@@ -272,6 +297,14 @@ def _goertzel_power(samples: list[int], sample_rate: int, frequency: float) -> f
 
 
 def _run_media_command(command: list[str], message: str) -> None:
+    """Run an external media command and translate failures.
+
+    :param command: Command argument vector.
+    :param message: Error prefix to use when the command fails.
+    :returns: None.
+    :raises MediaError: If the command cannot run or exits non-zero.
+    """
+
     try:
         result = subprocess.run(command, check=False, capture_output=True, text=True)
     except OSError as exc:

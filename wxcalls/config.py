@@ -151,6 +151,7 @@ class LabConfig:
     def validate_credentials(self) -> None:
         """Validate that all configured client credentials can be resolved.
 
+        :returns: None.
         :raises ConfigError: If any client secret is missing.
         """
 
@@ -203,6 +204,8 @@ def load_config(path: str | Path, env_file: str | Path | None = ".env") -> LabCo
     if not isinstance(raw, dict):
         raise ConfigError("Configuration root must be a mapping")
 
+    # Local dotenv values are layered over the process environment so shell-provided
+    # secrets remain available while per-lab overrides stay easy.
     env = dict(os.environ)
     if env_file:
         env.update(load_dotenv(Path(env_file)))
@@ -210,6 +213,8 @@ def load_config(path: str | Path, env_file: str | Path | None = ".env") -> LabCo
     clients = tuple(_parse_client(item) for item in _required_list(raw, "clients"))
     targets = tuple(_parse_target(item) for item in raw.get("targets", []) or [])
     artifacts_dir = Path(str(raw.get("artifacts_dir", "artifacts")))
+    # Explicit YAML nameservers win; an empty field falls back to the host resolver
+    # configuration for Mac-first live PJSUA2 runs.
     dns_nameservers = _optional_string_list(raw, "dns_nameservers") or get_dns_from_scutil()
     _ensure_unique("client", [client.name for client in clients])
     _ensure_unique("target", [target.name for target in targets])
@@ -240,6 +245,13 @@ def get_dns_from_scutil() -> tuple[str, ...]:
 
 
 def _parse_client(raw: Any) -> SipClientConfig:
+    """Parse one raw client mapping into a typed client config.
+
+    :param raw: Raw YAML client value.
+    :returns: Parsed SIP client configuration.
+    :raises ConfigError: If required client fields are absent or malformed.
+    """
+
     if not isinstance(raw, dict):
         raise ConfigError("Each client entry must be a mapping")
     required = ["name", "id_uri", "registrar_uri", "username_env", "password_env"]
@@ -263,6 +275,13 @@ def _parse_client(raw: Any) -> SipClientConfig:
 
 
 def _parse_target(raw: Any) -> TargetConfig:
+    """Parse one raw target mapping into a typed target config.
+
+    :param raw: Raw YAML target value.
+    :returns: Parsed target configuration.
+    :raises ConfigError: If the target entry is malformed.
+    """
+
     if not isinstance(raw, dict):
         raise ConfigError("Each target entry must be a mapping")
     if not raw.get("name") or not raw.get("uri"):
@@ -271,6 +290,14 @@ def _parse_target(raw: Any) -> TargetConfig:
 
 
 def _required_list(raw: dict[str, Any], key: str) -> list[Any]:
+    """Return a required non-empty list from a configuration mapping.
+
+    :param raw: Raw configuration mapping.
+    :param key: Field name to read.
+    :returns: Required list value.
+    :raises ConfigError: If the field is absent, empty, or not a list.
+    """
+
     value = raw.get(key)
     if not isinstance(value, list) or not value:
         raise ConfigError(f"Configuration field {key!r} must be a non-empty list")
@@ -278,6 +305,14 @@ def _required_list(raw: dict[str, Any], key: str) -> list[Any]:
 
 
 def _optional_string_list(raw: dict[str, Any], key: str) -> tuple[str, ...]:
+    """Return an optional list field as stripped strings.
+
+    :param raw: Raw configuration mapping.
+    :param key: Field name to read.
+    :returns: Parsed tuple of non-empty strings.
+    :raises ConfigError: If the field is not a list or contains empty values.
+    """
+
     value = raw.get(key, [])
     if value in (None, ""):
         return ()
@@ -290,6 +325,14 @@ def _optional_string_list(raw: dict[str, Any], key: str) -> tuple[str, ...]:
 
 
 def _ensure_unique(kind: str, values: list[str]) -> None:
+    """Validate that logical names are unique.
+
+    :param kind: Human-readable value category for error messages.
+    :param values: Values to inspect for duplicates.
+    :returns: None.
+    :raises ConfigError: If duplicate values are present.
+    """
+
     seen: set[str] = set()
     duplicates = sorted({value for value in values if value in seen or seen.add(value)})
     if duplicates:
@@ -297,6 +340,12 @@ def _ensure_unique(kind: str, values: list[str]) -> None:
 
 
 def _strip_env_quotes(value: str) -> str:
+    """Remove one matching pair of shell-style quotes from a dotenv value.
+
+    :param value: Raw dotenv value.
+    :returns: Unquoted value when quotes match, otherwise the original value.
+    """
+
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
         return value[1:-1]
     return value
