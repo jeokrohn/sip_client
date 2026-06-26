@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import math
+import struct
+import wave
 from pathlib import Path
 
 import pytest
 
 from wxcalls.exceptions import MediaError
-from wxcalls.media import create_silence_wav, detect_marker, generate_marker_tone, inject_marker
+from wxcalls.media import create_silence_wav, detect_marker, generate_marker_tone, inject_marker, marker_frequency
 
 
 def test_marker_tone_is_detected(tmp_path: Path) -> None:
@@ -38,6 +41,28 @@ def test_marker_injection_appends_detectable_tone(tmp_path: Path) -> None:
 
     assert detect_marker(marked, "marker-two")
     assert not detect_marker(source, "marker-two")
+
+
+def test_detect_marker_rejects_near_silent_tone(tmp_path: Path) -> None:
+    """Verify marker detection requires a meaningful signal floor.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
+    marker = "marker-quiet"
+    wav_path = tmp_path / "quiet-marker.wav"
+    sample_rate = 16_000
+    frequency = marker_frequency(marker)
+    with wave.open(str(wav_path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        for index in range(int(sample_rate * 0.5)):
+            sample = int(4 * math.sin(2 * math.pi * frequency * index / sample_rate))
+            wav.writeframesraw(struct.pack("<h", sample))
+
+    assert not detect_marker(wav_path, marker)
 
 
 def test_detect_marker_rejects_unreadable_wav(tmp_path: Path) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,6 +14,7 @@ from wxcalls.backends.pjsua2 import (
     _configure_srtp,
     _is_active_media_status,
     _reroute_audio_players,
+    _reroute_audio_recorders,
     _set_call_media_counts,
     _validate_secure_signaling_for_mandatory_srtp,
 )
@@ -311,6 +313,51 @@ def test_reroute_audio_players_skips_existing_listener() -> None:
     assert player.wxcalls_audio_media is media
 
 
+def test_reroute_audio_recorders_reconnects_to_changed_media_port() -> None:
+    """Verify active audio recorders reroute to a changed media port.
+
+    :returns: None.
+    """
+
+    old_media = FakeAudioMedia(stop_raises=False, port_id=1)
+    new_media = FakeAudioMedia(stop_raises=False, port_id=3)
+    recorder = FakeRecorder(port_id=2)
+    recorder.wxcalls_audio_media = old_media
+    recorder.wxcalls_transmitting = True
+    old_media.startTransmit(recorder)
+    pj_call = FakePjCall(old_media)
+    pj_call.recorders.append(recorder)
+
+    _reroute_audio_recorders(pj_call, new_media)
+
+    assert recorder.wxcalls_audio_media is new_media
+    assert recorder.wxcalls_transmitting
+    assert old_media.transmit_sinks == []
+    assert new_media.transmit_sinks == [recorder]
+    assert new_media.listeners == [2]
+
+
+def test_reroute_audio_recorders_skips_existing_listener() -> None:
+    """Verify recorder rerouting skips an already attached target port.
+
+    :returns: None.
+    """
+
+    media = FakeAudioMedia(stop_raises=False, port_id=1)
+    recorder = FakeRecorder(port_id=2)
+    recorder.wxcalls_audio_media = media
+    recorder.wxcalls_transmitting = True
+    media.listeners.append(2)
+    pj_call = FakePjCall(media)
+    pj_call.recorders.append(recorder)
+
+    _reroute_audio_recorders(pj_call, media)
+
+    assert media.transmit_sinks == []
+    assert recorder.wxcalls_audio_media is media
+    assert recorder.wxcalls_transmitting
+
+
 @pytest.mark.parametrize(
     ("transport", "proxy_uri"),
     [
@@ -536,6 +583,8 @@ class FakeAudioMedia:
 
         self.stop_raises = stop_raises
         self.port_id = port_id
+        self.transmit_sinks: list[FakeRecorder] = []
+        self.listeners: list[int] = []
 
     def getPortId(self) -> int:  # noqa: N802 - PJSUA2 method name
         """Return the fake conference port id.
@@ -545,6 +594,14 @@ class FakeAudioMedia:
 
         return self.port_id
 
+    def getPortInfo(self) -> FakePortInfo:  # noqa: N802 - PJSUA2 method name
+        """Return fake conference port listener info.
+
+        :returns: Fake port info.
+        """
+
+        return FakePortInfo(self.listeners)
+
     def startTransmit(self, recorder: FakeRecorder) -> None:  # noqa: N802 - PJSUA2 method name
         """Mark a fake recorder as started.
 
@@ -553,6 +610,8 @@ class FakeAudioMedia:
         """
 
         recorder.started = True
+        self.transmit_sinks.append(recorder)
+        self.listeners.append(recorder.getPortId())
 
     def stopTransmit(self, recorder: FakeRecorder) -> None:  # noqa: N802 - PJSUA2 method name
         """Mark a fake recorder as stopped or raise the configured failure.
@@ -565,13 +624,18 @@ class FakeAudioMedia:
         if self.stop_raises:
             raise RuntimeError("conference route already gone")
         recorder.stopped = True
+        with suppress(ValueError):
+            self.transmit_sinks.remove(recorder)
+        with suppress(ValueError):
+            self.listeners.remove(recorder.getPortId())
 
 
 class FakeRecorder:
-    def __init__(self, finalizes: bool = True) -> None:
+    def __init__(self, finalizes: bool = True, port_id: int = 2) -> None:
         """Create fake recorder state.
 
         :param finalizes: Whether finalization creates a readable WAV.
+        :param port_id: Fake conference port id.
         :returns: None.
         """
 
@@ -579,8 +643,17 @@ class FakeRecorder:
         self.stopped = False
         self.finalized = False
         self.finalizes = finalizes
+        self.port_id = port_id
         self.path: Path | None = None
         self.thisown = True
+
+    def getPortId(self) -> int:  # noqa: N802 - PJSUA2 method name
+        """Return the fake conference port id.
+
+        :returns: Fake port id.
+        """
+
+        return self.port_id
 
     def createRecorder(self, path: str) -> None:  # noqa: N802 - PJSUA2 method name
         """Create a fake recording file.

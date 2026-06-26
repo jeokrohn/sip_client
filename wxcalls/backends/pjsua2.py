@@ -406,14 +406,14 @@ class Pjsua2SipBackend:
         pj_call.recorders.append(recorder)
         started = False
         try:
-            audio_media.startTransmit(recorder)
+            _start_audio_recorder_route(recorder, audio_media)
             started = True
             await asyncio.sleep(seconds)
         finally:
             stop_error = None
             if started:
                 try:
-                    audio_media.stopTransmit(recorder)
+                    _stop_audio_recorder_route(recorder)
                 except Exception as exc:
                     stop_error = exc
             with suppress(ValueError):
@@ -748,6 +748,7 @@ def _create_call_adapter(
                         self.audio_media = self.getAudioMedia(index)
                         handle.media_active = True
                         _reroute_audio_players(self, self.audio_media)
+                        _reroute_audio_recorders(self, self.audio_media)
                     if _is_video_type(self.backend.pj, media_type) and _is_active_media_status(self.backend.pj, status):
                         handle.video_active = True
             except Exception:
@@ -1103,6 +1104,27 @@ def _reroute_audio_players(pj_call: Any, audio_media: Any) -> None:
             _start_audio_player_route(player, audio_media)
 
 
+def _reroute_audio_recorders(pj_call: Any, audio_media: Any) -> None:
+    """Reconnect active WAV recorders after a call audio port changes.
+
+    :param pj_call: PJSUA2 call adapter.
+    :param audio_media: New active call audio media.
+    :returns: None.
+    """
+
+    for recorder in list(getattr(pj_call, "recorders", [])):
+        if not getattr(recorder, "wxcalls_transmitting", False):
+            continue
+        recorder_port_id = _audio_media_port_id(recorder)
+        if recorder_port_id is not None and _audio_media_is_routed_to(audio_media, recorder_port_id):
+            recorder.wxcalls_audio_media = audio_media
+            continue
+        with suppress(Exception):
+            _stop_audio_recorder_route(recorder)
+        with suppress(Exception):
+            _start_audio_recorder_route(recorder, audio_media)
+
+
 def _start_audio_player_route(player: Any, audio_media: Any) -> None:
     """Start routing a player into the supplied audio media.
 
@@ -1120,6 +1142,23 @@ def _start_audio_player_route(player: Any, audio_media: Any) -> None:
         raise
 
 
+def _start_audio_recorder_route(recorder: Any, audio_media: Any) -> None:
+    """Start routing call audio into a recorder.
+
+    :param recorder: PJSUA2 audio recorder.
+    :param audio_media: Source call audio media.
+    :returns: None.
+    """
+
+    recorder.wxcalls_audio_media = audio_media
+    _mark_audio_recorder_transmitting(recorder, True)
+    try:
+        audio_media.startTransmit(recorder)
+    except Exception:
+        _mark_audio_recorder_transmitting(recorder, False)
+        raise
+
+
 def _mark_audio_player_transmitting(player: Any, transmitting: bool) -> None:
     """Record whether a player route has been started.
 
@@ -1130,6 +1169,18 @@ def _mark_audio_player_transmitting(player: Any, transmitting: bool) -> None:
 
     with suppress(Exception):
         player.wxcalls_transmitting = transmitting
+
+
+def _mark_audio_recorder_transmitting(recorder: Any, transmitting: bool) -> None:
+    """Record whether a recorder route has been started.
+
+    :param recorder: PJSUA2 audio recorder.
+    :param transmitting: Current route state.
+    :returns: None.
+    """
+
+    with suppress(Exception):
+        recorder.wxcalls_transmitting = transmitting
 
 
 def _stop_audio_player(player: Any) -> None:
@@ -1145,6 +1196,21 @@ def _stop_audio_player(player: Any) -> None:
             player.stopTransmit(audio_media)
         _mark_audio_player_transmitting(player, False)
     _set_audio_player_eof(player)
+
+
+def _stop_audio_recorder_route(recorder: Any) -> None:
+    """Stop routing call audio into a recorder.
+
+    :param recorder: PJSUA2 audio recorder.
+    :returns: None.
+    """
+
+    audio_media = getattr(recorder, "wxcalls_audio_media", None)
+    try:
+        if audio_media is not None and getattr(recorder, "wxcalls_transmitting", False):
+            audio_media.stopTransmit(recorder)
+    finally:
+        _mark_audio_recorder_transmitting(recorder, False)
 
 
 def _audio_player_eof_seen(player: Any) -> bool:
@@ -1168,6 +1234,21 @@ def _audio_player_is_routed_to(player: Any, port_id: int) -> bool:
 
     try:
         listeners = player.getPortInfo().listeners
+    except Exception:
+        return False
+    return any(int(listener) == port_id for listener in listeners)
+
+
+def _audio_media_is_routed_to(audio_media: Any, port_id: int) -> bool:
+    """Return whether an audio media source is transmitting to a port.
+
+    :param audio_media: Source call audio media.
+    :param port_id: Destination conference port id.
+    :returns: ``True`` when the media has the destination in its listener list.
+    """
+
+    try:
+        listeners = audio_media.getPortInfo().listeners
     except Exception:
         return False
     return any(int(listener) == port_id for listener in listeners)

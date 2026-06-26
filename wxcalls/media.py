@@ -230,18 +230,21 @@ def concatenate_wavs(paths: list[Path], output_path: Path) -> None:
         wav.writeframes(b"".join(frames))
 
 
-def detect_marker(path: Path, marker: str, threshold: float = 0.08) -> bool:
+def detect_marker(path: Path, marker: str, threshold: float = 0.08, minimum_peak: int = 256) -> bool:
     """Detect whether a marker tone is present in a WAV recording.
 
     :param path: WAV file to analyze.
     :param marker: Marker identifier.
     :param threshold: Minimum normalized tone energy ratio.
+    :param minimum_peak: Minimum absolute sample value required before frequency detection.
     :returns: ``True`` if the marker frequency is detected.
     :raises MediaError: If the WAV file cannot be read.
     """
 
     samples, sample_rate = _read_mono_int16(path)
     if not samples:
+        return False
+    if max(abs(sample) for sample in samples) < minimum_peak:
         return False
     frequency = marker_frequency(marker)
     signal_power = sum(sample * sample for sample in samples) or 1.0
