@@ -12,7 +12,9 @@ from wxcalls.backends.base import CallHandle
 from wxcalls.backends.pjsua2 import (
     Pjsua2SipBackend,
     _configure_srtp,
+    _disable_audio_codecs,
     _is_active_media_status,
+    _prioritize_audio_codecs,
     _reroute_audio_players,
     _reroute_audio_recorders,
     _set_call_media_counts,
@@ -71,6 +73,36 @@ class FakeAccountConfig:
         self.mediaConfig = FakeMediaConfig()
 
 
+class FakeCodecEndpoint:
+    def __init__(self, codecs: list[object]) -> None:
+        """Create a fake endpoint with configurable codecs.
+
+        :param codecs: Fake codec info objects.
+        :returns: None.
+        """
+
+        self.codecs = codecs
+        self.priorities: dict[str, int] = {}
+
+    def codecEnum2(self) -> list[object]:  # noqa: N802 - PJSUA2 API name
+        """Return fake endpoint codec info.
+
+        :returns: Fake codec info objects.
+        """
+
+        return self.codecs
+
+    def codecSetPriority(self, codec_id: str, priority: int) -> None:  # noqa: N802 - PJSUA2 API name
+        """Record a codec priority update.
+
+        :param codec_id: Codec ID.
+        :param priority: Requested codec priority.
+        :returns: None.
+        """
+
+        self.priorities[codec_id] = priority
+
+
 def test_configure_srtp_requires_secure_media() -> None:
     """Verify SRTP configuration enforces secure media settings.
 
@@ -97,6 +129,66 @@ def test_configure_srtp_requires_binding_support() -> None:
 
     with pytest.raises(BackendError, match="SRTP"):
         _configure_srtp(account_config, object())
+
+
+def test_disable_audio_codecs_sets_matching_priorities() -> None:
+    """Verify configured codec patterns are disabled on the PJSUA2 endpoint.
+
+    :returns: None.
+    """
+
+    endpoint = FakeCodecEndpoint(
+        [
+            SimpleNamespace(codecId="speex/16000/1"),
+            SimpleNamespace(codecId="PCMU/8000/1"),
+            SimpleNamespace(codecId="Speex/8000/1"),
+        ]
+    )
+
+    disabled = _disable_audio_codecs(endpoint, ("speex/*",))
+
+    assert disabled == ["speex/16000/1", "Speex/8000/1"]
+    assert endpoint.priorities == {"speex/16000/1": 0, "Speex/8000/1": 0}
+
+
+def test_disable_audio_codecs_requires_binding_support() -> None:
+    """Verify codec configuration fails when endpoint controls are missing.
+
+    :returns: None.
+    """
+
+    with pytest.raises(BackendError, match="codec priority"):
+        _disable_audio_codecs(object(), ("speex/*",))
+
+
+def test_prioritize_audio_codecs_sets_matching_priorities() -> None:
+    """Verify preferred codecs receive explicit endpoint priorities.
+
+    :returns: None.
+    """
+
+    endpoint = FakeCodecEndpoint(
+        [
+            SimpleNamespace(codecId="iLBC/8000/1"),
+            SimpleNamespace(codecId="PCMU/8000/1"),
+            SimpleNamespace(codecId="PCMA/8000/1"),
+        ]
+    )
+
+    applied = _prioritize_audio_codecs(endpoint, (("PCMU/*", 255), ("PCMA/*", 254)))
+
+    assert applied == {"PCMU/8000/1": 255, "PCMA/8000/1": 254}
+    assert endpoint.priorities == {"PCMU/8000/1": 255, "PCMA/8000/1": 254}
+
+
+def test_prioritize_audio_codecs_requires_binding_support() -> None:
+    """Verify preferred codec configuration requires endpoint controls.
+
+    :returns: None.
+    """
+
+    with pytest.raises(BackendError, match="codec priority"):
+        _prioritize_audio_codecs(object(), (("PCMU/*", 255),))
 
 
 def test_set_call_media_counts_disables_text_and_preserves_audio() -> None:

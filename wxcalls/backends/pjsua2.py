@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import wave
 from contextlib import suppress
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -21,6 +22,8 @@ from wxcalls.exceptions import TimeoutError as WxTimeoutError
 
 _RECORDING_READY_TIMEOUT = 1.0
 _RECORDING_POLL_INTERVAL = 0.05
+_DISABLED_CODEC_PATTERNS = ("speex/*",)
+_PREFERRED_CODEC_PRIORITIES = (("PCMU/*", 255), ("PCMA/*", 254))
 
 
 class Pjsua2SipBackend:
@@ -84,6 +87,8 @@ class Pjsua2SipBackend:
             transport_cfg.port = int(first_port)
         self.endpoint.transportCreate(transport, transport_cfg)
         self.endpoint.libStart()
+        _disable_audio_codecs(self.endpoint, _DISABLED_CODEC_PATTERNS)
+        _prioritize_audio_codecs(self.endpoint, _PREFERRED_CODEC_PRIORITIES)
         self._try_set_null_audio_device()
         self.poll_task = asyncio.create_task(self._poll_events())
 
@@ -915,6 +920,86 @@ def _configure_srtp(account_config: Any, pj: Any) -> None:
     srtp_opt.cryptos.append(crypto)
     _clear_vector(srtp_opt.keyings)
     srtp_opt.keyings.append(sdes_keying)
+
+
+def _disable_audio_codecs(endpoint: Any, patterns: tuple[str, ...]) -> list[str]:
+    """Disable endpoint audio codecs whose codec IDs match shell-style patterns.
+
+    :param endpoint: PJSUA2 endpoint object.
+    :param patterns: Case-insensitive codec ID patterns such as ``speex/*``.
+    :returns: Codec IDs that were disabled.
+    :raises BackendError: If codec enumeration or priority updates are unavailable.
+    """
+
+    enum_codecs = getattr(endpoint, "codecEnum2", None) or getattr(endpoint, "codecEnum", None)
+    set_priority = getattr(endpoint, "codecSetPriority", None)
+    if not callable(enum_codecs) or not callable(set_priority):
+        raise BackendError("PJSUA2 binding does not expose codec priority controls")
+
+    disabled: list[str] = []
+    lowered_patterns = tuple(pattern.lower() for pattern in patterns)
+    try:
+        codecs = enum_codecs()
+        for codec in codecs:
+            codec_id = _codec_id(codec)
+            if codec_id is None:
+                continue
+            normalized = codec_id.lower()
+            if any(fnmatchcase(normalized, pattern) for pattern in lowered_patterns):
+                set_priority(codec_id, 0)
+                disabled.append(codec_id)
+    except Exception as exc:
+        raise BackendError("Failed to configure PJSUA2 audio codec priorities") from exc
+    return disabled
+
+
+def _prioritize_audio_codecs(endpoint: Any, codec_priorities: tuple[tuple[str, int], ...]) -> dict[str, int]:
+    """Set priorities for endpoint audio codecs matching shell-style patterns.
+
+    :param endpoint: PJSUA2 endpoint object.
+    :param codec_priorities: Case-insensitive ``(codec ID pattern, priority)`` pairs.
+    :returns: Codec IDs mapped to the priority applied to each one.
+    :raises BackendError: If codec enumeration or priority updates are unavailable.
+    """
+
+    enum_codecs = getattr(endpoint, "codecEnum2", None) or getattr(endpoint, "codecEnum", None)
+    set_priority = getattr(endpoint, "codecSetPriority", None)
+    if not callable(enum_codecs) or not callable(set_priority):
+        raise BackendError("PJSUA2 binding does not expose codec priority controls")
+
+    applied: dict[str, int] = {}
+    lowered_priorities = tuple((pattern.lower(), priority) for pattern, priority in codec_priorities)
+    try:
+        codecs = enum_codecs()
+        for codec in codecs:
+            codec_id = _codec_id(codec)
+            if codec_id is None:
+                continue
+            normalized = codec_id.lower()
+            for pattern, priority in lowered_priorities:
+                if fnmatchcase(normalized, pattern):
+                    set_priority(codec_id, priority)
+                    applied[codec_id] = priority
+                    break
+    except Exception as exc:
+        raise BackendError("Failed to configure PJSUA2 audio codec priorities") from exc
+    return applied
+
+
+def _codec_id(codec_info: Any) -> str | None:
+    """Return a codec ID from a PJSUA2 codec info object.
+
+    :param codec_info: PJSUA2 codec info object or codec ID string.
+    :returns: Codec ID when one can be extracted.
+    """
+
+    if isinstance(codec_info, str):
+        return codec_info
+    for attribute in ("codecId", "codec_id", "id"):
+        value = getattr(codec_info, attribute, None)
+        if isinstance(value, str) and value:
+            return value
+    return None
 
 
 def _validate_secure_signaling_for_mandatory_srtp(client: SipClientConfig) -> None:
