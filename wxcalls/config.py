@@ -7,9 +7,10 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Self
 
 import yaml
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from wxcalls.exceptions import ConfigError
 
@@ -159,6 +160,208 @@ class LabConfig:
             client.credentials(self.env)
 
 
+class _RawSipClientConfig(BaseModel):
+    """Pydantic model for one SIP client entry loaded from YAML.
+
+    :param name: Stable logical name used by scenarios.
+    :param id_uri: SIP identity URI used in the account ``From`` header.
+    :param registrar_uri: SIP registrar URI.
+    :param username_env: Environment variable containing the SIP username.
+    :param password_env: Environment variable containing the SIP password.
+    :param proxy_uri: Optional outbound proxy or route URI.
+    :param transport: Preferred transport label.
+    :param enable_video: Whether video may be offered for video smoke tests.
+    :param local_port: Optional local SIP signaling port override.
+    """
+
+    name: str
+    id_uri: str
+    registrar_uri: str
+    username_env: str
+    password_env: str
+    proxy_uri: str | None = None
+    transport: str = "tls"
+    enable_video: bool = False
+    local_port: int | None = None
+
+    @field_validator("name", "id_uri", "registrar_uri", "username_env", "password_env")
+    @classmethod
+    def _non_empty_string(cls, value: str) -> str:
+        """Validate and normalize a required client string.
+
+        :param value: Candidate string value.
+        :returns: Stripped non-empty string.
+        """
+
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("value cannot be empty")
+        return stripped
+
+    @field_validator("proxy_uri")
+    @classmethod
+    def _optional_proxy(cls, value: str | None) -> str | None:
+        """Normalize an optional proxy URI.
+
+        :param value: Candidate proxy URI.
+        :returns: Stripped proxy URI, or ``None`` when empty.
+        """
+
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+    @field_validator("transport")
+    @classmethod
+    def _lower_transport(cls, value: str) -> str:
+        """Normalize the configured transport label.
+
+        :param value: Candidate transport label.
+        :returns: Lowercase transport label.
+        """
+
+        stripped = value.strip().lower()
+        if not stripped:
+            raise ValueError("transport cannot be empty")
+        return stripped
+
+    def to_config(self) -> SipClientConfig:
+        """Convert the raw model into the public dataclass config.
+
+        :returns: SIP client configuration dataclass.
+        """
+
+        return SipClientConfig(
+            name=self.name,
+            id_uri=self.id_uri,
+            registrar_uri=self.registrar_uri,
+            username_env=self.username_env,
+            password_env=self.password_env,
+            proxy_uri=self.proxy_uri,
+            transport=self.transport,
+            enable_video=self.enable_video,
+            local_port=self.local_port,
+        )
+
+
+class _RawTargetConfig(BaseModel):
+    """Pydantic model for one opaque target entry loaded from YAML.
+
+    :param name: Stable logical name used by scenarios.
+    :param uri: Dialable SIP URI or address.
+    :param kind: Human-readable target type.
+    """
+
+    name: str
+    uri: str
+    kind: str = "sip"
+
+    @field_validator("name", "uri", "kind")
+    @classmethod
+    def _non_empty_string(cls, value: str) -> str:
+        """Validate and normalize a target string.
+
+        :param value: Candidate string value.
+        :returns: Stripped non-empty string.
+        """
+
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("value cannot be empty")
+        return stripped
+
+    def to_config(self) -> TargetConfig:
+        """Convert the raw model into the public dataclass config.
+
+        :returns: Target configuration dataclass.
+        """
+
+        return TargetConfig(name=self.name, uri=self.uri, kind=self.kind)
+
+
+class _RawLabConfig(BaseModel):
+    """Pydantic model for the raw YAML lab configuration.
+
+    :param clients: SIP clients available to scenarios.
+    :param targets: Opaque non-simulated call targets.
+    :param artifacts_dir: Directory where run artifacts are written.
+    :param dns_nameservers: Optional DNS resolver addresses.
+    """
+
+    clients: tuple[_RawSipClientConfig, ...] = Field(min_length=1)
+    targets: tuple[_RawTargetConfig, ...] = ()
+    artifacts_dir: Path = Path("artifacts")
+    dns_nameservers: tuple[str, ...] = ()
+
+    @field_validator("targets", mode="before")
+    @classmethod
+    def _normalize_targets(cls, value: object) -> object:
+        """Normalize an empty targets field before tuple validation.
+
+        :param value: Raw ``targets`` value from YAML.
+        :returns: Normalized value for Pydantic tuple parsing.
+        """
+
+        if value is None:
+            return ()
+        return value
+
+    @field_validator("dns_nameservers", mode="before")
+    @classmethod
+    def _normalize_nameservers(cls, value: object) -> object:
+        """Normalize empty DNS fields before tuple validation.
+
+        :param value: Raw ``dns_nameservers`` value from YAML.
+        :returns: Normalized value for Pydantic tuple parsing.
+        """
+
+        if value in (None, ""):
+            return ()
+        return value
+
+    @field_validator("dns_nameservers")
+    @classmethod
+    def _non_empty_nameservers(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        """Validate and strip configured DNS nameservers.
+
+        :param value: Parsed nameserver tuple.
+        :returns: Tuple of stripped nameservers.
+        """
+
+        parsed = tuple(item.strip() for item in value)
+        if any(not item for item in parsed):
+            raise ValueError("dns_nameservers cannot contain empty values")
+        return parsed
+
+    @model_validator(mode="after")
+    def _validate_unique_names(self) -> Self:
+        """Validate uniqueness of logical client and target names.
+
+        :returns: Validated raw lab configuration.
+        """
+
+        _ensure_unique("client", [client.name for client in self.clients])
+        _ensure_unique("target", [target.name for target in self.targets])
+        return self
+
+    def to_config(self, env: dict[str, str], dns_nameservers: tuple[str, ...]) -> LabConfig:
+        """Convert the raw model into the public lab config dataclass.
+
+        :param env: Resolved local environment.
+        :param dns_nameservers: Final DNS nameservers after fallback handling.
+        :returns: Lab configuration dataclass.
+        """
+
+        return LabConfig(
+            clients=tuple(client.to_config() for client in self.clients),
+            targets=tuple(target.to_config() for target in self.targets),
+            artifacts_dir=self.artifacts_dir,
+            dns_nameservers=dns_nameservers,
+            env=env,
+        )
+
+
 def load_dotenv(path: Path) -> dict[str, str]:
     """Load a small ``KEY=VALUE`` env file without mutating ``os.environ``.
 
@@ -210,22 +413,19 @@ def load_config(path: str | Path, env_file: str | Path | None = ".env") -> LabCo
     if env_file:
         env.update(load_dotenv(Path(env_file)))
 
-    clients = tuple(_parse_client(item) for item in _required_list(raw, "clients"))
-    targets = tuple(_parse_target(item) for item in raw.get("targets", []) or [])
-    artifacts_dir = Path(str(raw.get("artifacts_dir", "artifacts")))
+    # Pydantic owns raw YAML shape and type validation. The public config remains
+    # dataclass-based so the rest of the application API stays stable.
+    try:
+        parsed = _RawLabConfig.model_validate(raw)
+    except ConfigError:
+        raise
+    except ValidationError as exc:
+        raise ConfigError(f"Invalid configuration file {config_path}: {exc}") from exc
+
     # Explicit YAML nameservers win; an empty field falls back to the host resolver
     # configuration for Mac-first live PJSUA2 runs.
-    dns_nameservers = _optional_string_list(raw, "dns_nameservers") or get_dns_from_scutil()
-    _ensure_unique("client", [client.name for client in clients])
-    _ensure_unique("target", [target.name for target in targets])
-
-    return LabConfig(
-        clients=clients,
-        targets=targets,
-        artifacts_dir=artifacts_dir,
-        dns_nameservers=dns_nameservers,
-        env=env,
-    )
+    dns_nameservers = parsed.dns_nameservers or get_dns_from_scutil()
+    return parsed.to_config(env=env, dns_nameservers=dns_nameservers)
 
 
 def get_dns_from_scutil() -> tuple[str, ...]:
@@ -242,86 +442,6 @@ def get_dns_from_scutil() -> tuple[str, ...]:
 
     servers = re.findall(r"nameserver\[\d+\]\s*:\s*(\S+)", result.stdout)
     return tuple(dict.fromkeys(servers))
-
-
-def _parse_client(raw: Any) -> SipClientConfig:
-    """Parse one raw client mapping into a typed client config.
-
-    :param raw: Raw YAML client value.
-    :returns: Parsed SIP client configuration.
-    :raises ConfigError: If required client fields are absent or malformed.
-    """
-
-    if not isinstance(raw, dict):
-        raise ConfigError("Each client entry must be a mapping")
-    required = ["name", "id_uri", "registrar_uri", "username_env", "password_env"]
-    missing = [key for key in required if not raw.get(key)]
-    if missing:
-        raise ConfigError(f"Client entry is missing required field(s): {', '.join(missing)}")
-    local_port = raw.get("local_port")
-    if local_port is not None and not isinstance(local_port, int):
-        raise ConfigError(f"Client {raw['name']} local_port must be an integer")
-    return SipClientConfig(
-        name=str(raw["name"]),
-        id_uri=str(raw["id_uri"]),
-        registrar_uri=str(raw["registrar_uri"]),
-        username_env=str(raw["username_env"]),
-        password_env=str(raw["password_env"]),
-        proxy_uri=str(raw["proxy_uri"]) if raw.get("proxy_uri") else None,
-        transport=str(raw.get("transport", "tls")).lower(),
-        enable_video=bool(raw.get("enable_video", False)),
-        local_port=local_port,
-    )
-
-
-def _parse_target(raw: Any) -> TargetConfig:
-    """Parse one raw target mapping into a typed target config.
-
-    :param raw: Raw YAML target value.
-    :returns: Parsed target configuration.
-    :raises ConfigError: If the target entry is malformed.
-    """
-
-    if not isinstance(raw, dict):
-        raise ConfigError("Each target entry must be a mapping")
-    if not raw.get("name") or not raw.get("uri"):
-        raise ConfigError("Target entries require name and uri")
-    return TargetConfig(name=str(raw["name"]), uri=str(raw["uri"]), kind=str(raw.get("kind", "sip")))
-
-
-def _required_list(raw: dict[str, Any], key: str) -> list[Any]:
-    """Return a required non-empty list from a configuration mapping.
-
-    :param raw: Raw configuration mapping.
-    :param key: Field name to read.
-    :returns: Required list value.
-    :raises ConfigError: If the field is absent, empty, or not a list.
-    """
-
-    value = raw.get(key)
-    if not isinstance(value, list) or not value:
-        raise ConfigError(f"Configuration field {key!r} must be a non-empty list")
-    return value
-
-
-def _optional_string_list(raw: dict[str, Any], key: str) -> tuple[str, ...]:
-    """Return an optional list field as stripped strings.
-
-    :param raw: Raw configuration mapping.
-    :param key: Field name to read.
-    :returns: Parsed tuple of non-empty strings.
-    :raises ConfigError: If the field is not a list or contains empty values.
-    """
-
-    value = raw.get(key, [])
-    if value in (None, ""):
-        return ()
-    if not isinstance(value, list):
-        raise ConfigError(f"Configuration field {key!r} must be a list")
-    parsed = tuple(str(item).strip() for item in value)
-    if any(not item for item in parsed):
-        raise ConfigError(f"Configuration field {key!r} cannot contain empty values")
-    return parsed
 
 
 def _ensure_unique(kind: str, values: list[str]) -> None:
