@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import builtins
 import shutil
+from contextlib import suppress
 from pathlib import Path
 from uuid import uuid4
 
@@ -34,6 +35,7 @@ class FakeSipBackend:
         self.linked_calls: dict[str, str] = {}
         self.calls: dict[str, CallHandle] = {}
         self.last_played: dict[str, Path] = {}
+        self.recording_waiters: dict[str, list[asyncio.Event]] = {}
         self.registration_results: dict[str, RegistrationResult] = {}
 
     async def initialize(self, config: LabConfig, pjsip_log_path: Path | None = None) -> None:
@@ -57,6 +59,7 @@ class FakeSipBackend:
         self.calls.clear()
         self.linked_calls.clear()
         self.last_played.clear()
+        self.recording_waiters.clear()
         self.registration_results.clear()
 
     async def register_client(
@@ -284,9 +287,11 @@ class FakeSipBackend:
         if not path.exists():
             raise BackendError(f"Audio file does not exist: {path}")
         self.last_played[call.id] = path
+        self._notify_recording_waiters(call.id)
         peer = self._linked(call)
         if peer:
             self.last_played[peer.id] = path
+            self._notify_recording_waiters(peer.id)
 
     async def record_wav(self, call: CallHandle, output_path: Path, seconds: float) -> None:
         """Copy the peer's played media or create silence.
@@ -298,7 +303,7 @@ class FakeSipBackend:
         """
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        played = self.last_played.get(call.id)
+        played = await self._played_media_for_recording(call, seconds)
         if played:
             shutil.copy2(played, output_path)
         else:
@@ -377,3 +382,36 @@ class FakeSipBackend:
 
         linked_id = self.linked_calls.get(call.id)
         return self.calls.get(linked_id or "")
+
+    async def _played_media_for_recording(self, call: CallHandle, seconds: float) -> Path | None:
+        """Return media played before or during a fake recording window.
+
+        :param call: Call handle being recorded.
+        :param seconds: Requested recording duration.
+        :returns: Captured playback media, if any.
+        """
+
+        played = self.last_played.get(call.id)
+        if played is not None:
+            return played
+
+        waiter = asyncio.Event()
+        self.recording_waiters.setdefault(call.id, []).append(waiter)
+        try:
+            await asyncio.wait_for(waiter.wait(), timeout=min(seconds, 0.5))
+        except builtins.TimeoutError:
+            return None
+        finally:
+            with suppress(ValueError):
+                self.recording_waiters.get(call.id, []).remove(waiter)
+        return self.last_played.get(call.id)
+
+    def _notify_recording_waiters(self, call_id: str) -> None:
+        """Wake fake recordings that are waiting for playback.
+
+        :param call_id: Backend call identifier receiving media.
+        :returns: None.
+        """
+
+        for waiter in self.recording_waiters.get(call_id, []):
+            waiter.set()

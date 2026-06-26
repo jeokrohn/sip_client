@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from wxcalls.artifacts import ArtifactWriter
+from wxcalls.backends.base import CallHandle
 from wxcalls.backends.fake import FakeSipBackend
 from wxcalls.config import LabConfig, SipClientConfig
+from wxcalls.exceptions import ScenarioError
 from wxcalls.media import MediaAsset, generate_marker_tone
 from wxcalls.orchestrator import CallLab
 from wxcalls.scenario import parse_scenario
@@ -46,6 +49,44 @@ class MarkerMediaFactory:
         """
 
         return MediaAsset(path=source, marker=marker)
+
+
+class TimingFakeSipBackend(FakeSipBackend):
+    """Fake backend that records media operation ordering for tests."""
+
+    def __init__(self) -> None:
+        """Create a timing fake backend.
+
+        :returns: None.
+        """
+
+        super().__init__()
+        self.media_events: list[tuple[str, float]] = []
+
+    async def play_wav(self, call: CallHandle, path: Path) -> None:
+        """Record playback start time before delegating to the fake backend.
+
+        :param call: Call handle receiving playback.
+        :param path: WAV path to play.
+        :returns: None.
+        """
+
+        self.media_events.append(("play", asyncio.get_running_loop().time()))
+        await super().play_wav(call, path)
+
+    async def record_wav(self, call: CallHandle, output_path: Path, seconds: float) -> None:
+        """Record recording start/end times before delegating to the fake backend.
+
+        :param call: Call handle being recorded.
+        :param output_path: Destination recording path.
+        :param seconds: Requested recording duration.
+        :returns: None.
+        """
+
+        loop = asyncio.get_running_loop()
+        self.media_events.append(("record_start", loop.time()))
+        await super().record_wav(call, output_path, seconds)
+        self.media_events.append(("record_end", loop.time()))
 
 
 @pytest.mark.parametrize("use_hold_resume", [False, True])
@@ -107,6 +148,161 @@ def test_fake_backend_runs_audio_marker_scenario(tmp_path: Path, use_hold_resume
 
     asyncio.run(run())
     assert (tmp_path / "artifacts" / "test-run" / "logs" / "timeline.json").exists()
+
+
+def test_fake_backend_runs_parallel_audio_marker_scenario(tmp_path: Path) -> None:
+    """Verify parallel branches can set up a call and verify media.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
+    lab = _lab(tmp_path)
+    scenario = parse_scenario(
+        {
+            "name": "parallel-audio",
+            "steps": [
+                {"action": "register", "clients": ["alice", "bob"]},
+                {
+                    "action": "parallel",
+                    "branches": {
+                        "caller": [
+                            {"action": "call", "client": "alice", "target": "bob", "save_as": "alice_to_bob"},
+                            {"action": "wait_state", "call": "alice_to_bob", "state": "connected"},
+                            {"action": "wait_media", "call": "alice_to_bob"},
+                        ],
+                        "callee": [
+                            {"action": "expect_incoming", "client": "bob", "save_as": "bob_incoming"},
+                            {"action": "answer", "call": "bob_incoming"},
+                            {"action": "wait_state", "call": "bob_incoming", "state": "connected"},
+                            {"action": "wait_media", "call": "bob_incoming"},
+                        ],
+                    },
+                },
+                {
+                    "action": "record_during_playback",
+                    "playback_call": "alice_to_bob",
+                    "recording_call": "bob_incoming",
+                    "text": "hello",
+                    "marker": "marker-parallel",
+                    "pre_roll": 0.01,
+                    "post_roll": 0.01,
+                    "save_as": "bob_recording",
+                },
+                {"action": "hangup", "calls": ["alice_to_bob", "bob_incoming"]},
+            ],
+        }
+    )
+
+    async def run() -> None:
+        """Run the parallel audio marker scenario inside a managed lab.
+
+        :returns: None.
+        """
+
+        async with lab:
+            await lab.run_scenario(scenario)
+
+    import asyncio
+
+    asyncio.run(run())
+    assert lab.calls["alice_to_bob"].state == "disconnected"
+    assert lab.recordings["bob_recording"].exists()
+    assert any(event["event"] == "parallel_started" for event in lab.artifacts.timeline)
+    assert any(event["event"] == "branch_finished" and event["branch"] == "caller" for event in lab.artifacts.timeline)
+    assert any(event["event"] == "branch_finished" and event["branch"] == "callee" for event in lab.artifacts.timeline)
+    assert any(
+        event["event"] == "marker_detected" and event["marker"] == "marker-parallel" for event in lab.artifacts.timeline
+    )
+
+
+def test_record_during_playback_starts_recording_before_playback(tmp_path: Path) -> None:
+    """Verify overlap recording starts before playback begins.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
+    backend = TimingFakeSipBackend()
+    lab = _lab(tmp_path, backend=backend)
+    scenario = parse_scenario(
+        {
+            "name": "overlap-audio",
+            "steps": [
+                {"action": "register", "clients": ["alice", "bob"]},
+                {"action": "call", "client": "alice", "target": "bob", "save_as": "alice_to_bob"},
+                {"action": "expect_incoming", "client": "bob", "save_as": "bob_incoming"},
+                {"action": "answer", "call": "bob_incoming"},
+                {"action": "wait_state", "call": "alice_to_bob", "state": "connected"},
+                {
+                    "action": "record_during_playback",
+                    "playback_call": "alice_to_bob",
+                    "recording_call": "bob_incoming",
+                    "text": "hello",
+                    "marker": "marker-overlap",
+                    "pre_roll": 0.01,
+                    "post_roll": 0,
+                    "save_as": "bob_recording",
+                },
+            ],
+        }
+    )
+
+    async def run() -> None:
+        """Run the overlap media scenario inside a managed lab.
+
+        :returns: None.
+        """
+
+        async with lab:
+            await lab.run_scenario(scenario)
+
+    import asyncio
+
+    asyncio.run(run())
+    event_times = {name: timestamp for name, timestamp in backend.media_events}
+    assert event_times["record_start"] < event_times["play"]
+    assert lab.recordings["bob_recording"].exists()
+
+
+def test_parallel_branch_failure_records_failed_branch(tmp_path: Path) -> None:
+    """Verify parallel failures identify the branch that failed.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
+    lab = _lab(tmp_path)
+    scenario = parse_scenario(
+        {
+            "name": "parallel-failure",
+            "steps": [
+                {
+                    "action": "parallel",
+                    "branches": {
+                        "broken": [{"action": "wait_state", "call": "missing", "state": "connected"}],
+                        "other": [{"action": "register", "client": "alice"}],
+                    },
+                }
+            ],
+        }
+    )
+
+    async def run() -> None:
+        """Run the failing parallel scenario inside a managed lab.
+
+        :returns: None.
+        """
+
+        async with lab:
+            await lab.run_scenario(scenario)
+
+    import asyncio
+
+    with pytest.raises(ScenarioError, match="broken"):
+        asyncio.run(run())
+    assert any(event["event"] == "branch_failed" and event["branch"] == "broken" for event in lab.artifacts.timeline)
+    assert any(event["event"] == "parallel_finished" and event["failed"] for event in lab.artifacts.timeline)
 
 
 def test_fake_backend_runs_attended_transfer(tmp_path: Path) -> None:
@@ -188,6 +384,49 @@ def test_fake_backend_pairs_numeric_extension_to_owner(tmp_path: Path) -> None:
     import asyncio
 
     asyncio.run(run())
+    assert lab.calls["bob_incoming"].client_name == "bob"
+
+
+def test_fake_backend_pairs_named_target_extension_to_owner(tmp_path: Path) -> None:
+    """Verify client-name targets can dial the target client's extension.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
+    lab = _lab(tmp_path)
+    scenario = parse_scenario(
+        {
+            "name": "named-extension-pairing",
+            "steps": [
+                {"action": "register", "clients": ["alice", "bob"]},
+                {
+                    "action": "call",
+                    "client": "alice",
+                    "target": "bob",
+                    "use_target_extension": True,
+                    "save_as": "alice_to_bob",
+                },
+                {"action": "expect_incoming", "client": "bob", "save_as": "bob_incoming"},
+                {"action": "answer", "call": "bob_incoming"},
+                {"action": "wait_state", "call": "alice_to_bob", "state": "connected"},
+            ],
+        }
+    )
+
+    async def run() -> None:
+        """Run the named-extension pairing scenario inside a managed lab.
+
+        :returns: None.
+        """
+
+        async with lab:
+            await lab.run_scenario(scenario)
+
+    import asyncio
+
+    asyncio.run(run())
+    assert lab.calls["alice_to_bob"].remote_uri == "sip:7108@registrar.example.invalid"
     assert lab.calls["bob_incoming"].client_name == "bob"
 
 
@@ -319,17 +558,30 @@ def test_numeric_extension_targets_resolve_against_calling_client_registrar(tmp_
 
     lab = _lab(tmp_path)
 
+    assert lab.resolve_call_target("alice", "bob") == "sip:bob@example.invalid"
+    assert lab.resolve_call_target("alice", "bob", use_target_extension=True) == "sip:7108@registrar.example.invalid"
     assert lab.resolve_call_target("alice", "7109") == "sip:7109@registrar.example.invalid"
     assert lab.resolve_call_target("charlie", "7109") == "sip:7109@registrar.example.invalid"
     assert lab.resolve_call_target("alice", "sip:7109@example.invalid") == "sip:7109@example.invalid"
     assert lab.config.client_name_for_extension_uri("sip:7108@registrar.example.invalid") == "bob"
 
+    with pytest.raises(ScenarioError, match="no configured extension"):
+        lab.resolve_call_target("alice", "charlie", use_target_extension=True)
 
-def _lab(tmp_path: Path, progress_reporter: Callable[[str], None] | None = None) -> CallLab:
+    with pytest.raises(ScenarioError, match="configured SIP client"):
+        lab.resolve_call_target("alice", "webex_user", use_target_extension=True)
+
+
+def _lab(
+    tmp_path: Path,
+    progress_reporter: Callable[[str], None] | None = None,
+    backend: FakeSipBackend | None = None,
+) -> CallLab:
     """Build a fake call lab for orchestrator tests.
 
     :param tmp_path: Temporary pytest directory.
     :param progress_reporter: Optional progress callback.
+    :param backend: Optional fake backend implementation.
     :returns: Configured call lab with fake backend and deterministic media.
     """
 
@@ -378,7 +630,7 @@ def _lab(tmp_path: Path, progress_reporter: Callable[[str], None] | None = None)
     )
     return CallLab(
         config=config,
-        backend=FakeSipBackend(),
+        backend=backend or FakeSipBackend(),
         artifact_writer=ArtifactWriter(config.artifacts_dir, run_id="test-run"),
         media_factory=MarkerMediaFactory(tmp_path / "media"),
         progress_reporter=progress_reporter,

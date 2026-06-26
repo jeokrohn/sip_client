@@ -89,6 +89,58 @@ clients:
 The live backend still dials `target: "7108"` as `sip:7108@<caller-registrar-host>`. The extension ownership field
 lets the fake backend and local smoke tests map that dialed extension URI back to the configured client.
 
+To keep scenarios readable while still dialing a configured client's extension, use the client name as `target` and
+set `use_target_extension: true`:
+
+```yaml
+steps:
+  - action: call
+    client: alice
+    target: bob
+    use_target_extension: true
+    save_as: alice_to_bob
+```
+
+This dials Bob's configured `extension` as `sip:<extension>@<alice-registrar-host>` instead of dialing Bob's `id_uri`.
+
+Use `parallel` when two or more clients need to act independently during the same wall-clock interval:
+
+```yaml
+steps:
+  - action: parallel
+    branches:
+      caller:
+        - action: call
+          client: alice
+          target: bob
+          save_as: alice_to_bob
+        - action: wait_state
+          call: alice_to_bob
+          state: connected
+      callee:
+        - action: expect_incoming
+          client: bob
+          save_as: bob_incoming
+        - action: answer
+          call: bob_incoming
+```
+
+For media-marker checks, prefer `record_during_playback` over a separate `play_tts` followed by `record`.
+The action starts recording first, waits for a short pre-roll, plays the media, waits for post-roll, and verifies
+the marker when `marker` is set:
+
+```yaml
+steps:
+  - action: record_during_playback
+    playback_call: alice_to_bob
+    recording_call: bob_incoming
+    text: "Webex Calling test marker."
+    marker: marker-basic-audio
+    save_as: bob_recording
+    pre_roll: 0.25
+    post_roll: 0.5
+```
+
 The live PJSUA2 backend requires SRTP on each account. Webex/BroadWorks inbound calls can offer `RTP/SAVP`
 with SDES `a=crypto`, while still using `sip:` URIs over TLS. Client configs must use TLS transport, a `sips:`
 proxy, or `;transport=tls`; plain RTP endpoints are rejected by design. SRTP offers are constrained to SDES

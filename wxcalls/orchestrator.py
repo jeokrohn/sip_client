@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import wave
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from wxcalls.artifacts import ArtifactWriter
 from wxcalls.backends.base import CallHandle, RegistrationResult, SipBackend
 from wxcalls.backends.fake import FakeSipBackend
 from wxcalls.backends.pjsua2 import Pjsua2SipBackend
-from wxcalls.config import LabConfig, load_config
+from wxcalls.config import ConfigError, LabConfig, load_config
 from wxcalls.exceptions import BackendError, ScenarioError
 from wxcalls.exceptions import TimeoutError as WxTimeoutError
-from wxcalls.media import MediaFactory, detect_marker
+from wxcalls.media import MediaAsset, MediaFactory, detect_marker
 from wxcalls.scenario import Scenario, ScenarioStep, load_scenario
 
 
@@ -118,24 +119,45 @@ class CallLab:
 
         return self.config.target(name)
 
-    def resolve_call_target(self, client_name: str, target: str) -> str:
+    def resolve_call_target(self, client_name: str, target: str, use_target_extension: bool = False) -> str:
         """Resolve a scenario call target into a backend dial string.
 
         :param client_name: Logical client placing the call.
         :param target: Client name, target name, literal URI, or numeric extension.
+        :param use_target_extension: Whether ``target`` names a client whose extension should be dialed.
         :returns: Dialable SIP target for the backend.
+        :raises ScenarioError: If extension dialing cannot resolve a configured client extension.
         """
+
+        if use_target_extension:
+            try:
+                target_client = self.config.client(target)
+            except ConfigError as exc:
+                raise ScenarioError(
+                    f"use_target_extension requires target to be a configured SIP client: {target!r}"
+                ) from exc
+            if target_client.extension is None:
+                raise ScenarioError(f"SIP client {target!r} has no configured extension")
+            return self._extension_target_uri(client_name, target_client.extension)
 
         resolved = self.config.resolve_target_uri(target)
         if resolved != target or ":" in resolved or "@" in resolved or not resolved.isdecimal():
             return resolved
 
-        # Numeric extension targets are shorthand for SIP URIs at the calling
-        # client's registrar host, matching common Webex Calling lab notation.
+        return self._extension_target_uri(client_name, resolved)
+
+    def _extension_target_uri(self, client_name: str, extension: str) -> str:
+        """Resolve a numeric extension against the calling client's registrar.
+
+        :param client_name: Logical client placing the call.
+        :param extension: Numeric extension to dial.
+        :returns: Dialable SIP URI, or the original extension if no host can be derived.
+        """
+
         registrar_host = _sip_host(self.config.client(client_name).registrar_uri)
         if registrar_host is None:
-            return resolved
-        return f"sip:{resolved}@{registrar_host}"
+            return extension
+        return f"sip:{extension}@{registrar_host}"
 
     async def run_scenario_path(self, path: str | Path) -> None:
         """Load and run a scenario file.
@@ -174,6 +196,81 @@ class CallLab:
         if handler is None:
             raise ScenarioError(f"Unsupported action: {step.action}")
         await handler(step.params)
+
+    async def _step_parallel(self, params: dict[str, Any]) -> None:
+        """Run named scenario branches concurrently.
+
+        :param params: Step parameters containing validated ``branches``.
+        :returns: None.
+        :raises ScenarioError: If any branch fails.
+        """
+
+        branches = cast(dict[str, tuple[ScenarioStep, ...]], params["branches"])
+        branch_names = list(branches)
+        failures: list[str] = []
+        failed = False
+        self.artifacts.record_event("parallel_started", branches=branch_names)
+        try:
+            async with asyncio.TaskGroup() as task_group:
+                for branch_name, steps in branches.items():
+                    task_group.create_task(
+                        self._run_parallel_branch(branch_name, steps, failures),
+                        name=f"wxcalls-branch-{branch_name}",
+                    )
+        except* Exception as exc_group:
+            failed = True
+            summary = "; ".join(failures) or _exception_summary(exc_group)
+            raise ScenarioError(f"Parallel step failed: {summary}") from exc_group
+        finally:
+            self.artifacts.record_event("parallel_finished", branches=branch_names, failed=failed)
+
+    async def _run_parallel_branch(
+        self,
+        branch_name: str,
+        steps: tuple[ScenarioStep, ...],
+        failures: list[str],
+    ) -> None:
+        """Run one branch inside a ``parallel`` step.
+
+        :param branch_name: Scenario branch name.
+        :param steps: Validated branch steps.
+        :param failures: Shared list used to summarize branch failures.
+        :returns: None.
+        :raises ScenarioError: If any branch step fails.
+        """
+
+        self.artifacts.record_event("branch_started", branch=branch_name, steps=len(steps))
+        try:
+            for step in steps:
+                self.artifacts.record_event(
+                    "step_started",
+                    branch=branch_name,
+                    index=step.index,
+                    action=step.action,
+                )
+                self._progress(f"branch {branch_name} step {step.index}/{len(steps)}: {step.action}")
+                await self._run_step(step)
+                self.artifacts.record_event(
+                    "step_finished",
+                    branch=branch_name,
+                    index=step.index,
+                    action=step.action,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            message = f"branch {branch_name!r} failed at step {step.index} ({step.action}): {exc}"
+            failures.append(message)
+            self.artifacts.record_event(
+                "branch_failed",
+                branch=branch_name,
+                index=step.index,
+                action=step.action,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            raise ScenarioError(message) from exc
+        self.artifacts.record_event("branch_finished", branch=branch_name)
 
     async def _step_register(self, params: dict[str, Any]) -> None:
         """Run a ``register`` scenario step.
@@ -249,7 +346,11 @@ class CallLab:
         """
 
         timeout = float(params.get("timeout", 30.0))
-        target_uri = self.resolve_call_target(str(params["client"]), str(params["target"]))
+        target_uri = self.resolve_call_target(
+            str(params["client"]),
+            str(params["target"]),
+            use_target_extension=bool(params.get("use_target_extension", False)),
+        )
         save_as = str(params.get("save_as", "call"))
         self._progress(f"call initiated: {params['client']} -> {target_uri} ({save_as})")
         call = await self.backend.place_call(
@@ -403,6 +504,67 @@ class CallLab:
         self.artifacts.record_event("recorded", call=call.id, recording=name, path=str(path))
         self._progress(f"recorded media: {path}")
 
+    async def _step_record_during_playback(self, params: dict[str, Any]) -> None:
+        """Record one call leg while playing media into another leg.
+
+        :param params: Step parameters.
+        :returns: None.
+        :raises ScenarioError: If marker assertion is requested without a marker.
+        :raises BackendError: If the requested marker is not detected.
+        """
+
+        playback_ref = str(params["playback_call"])
+        recording_ref = str(params["recording_call"])
+        playback_call = self._call(playback_ref)
+        recording_call = self._call(recording_ref)
+        asset = self._playback_asset_from_params(params)
+        pre_roll = float(params.get("pre_roll", 0.25))
+        post_roll = float(params.get("post_roll", 0.5))
+        seconds = float(params.get("seconds", pre_roll + _wav_duration_seconds(asset.path) + post_roll))
+        name = str(params.get("save_as", "recording"))
+        path = self.artifacts.path_for("media", name, ".wav")
+
+        self._progress(f"recording media during playback: {recording_ref} -> {path}")
+        record_task = asyncio.create_task(
+            self.backend.record_wav(recording_call, path, seconds=seconds),
+            name=f"wxcalls-record-{name}",
+        )
+        try:
+            if pre_roll:
+                await asyncio.sleep(pre_roll)
+            self._progress(f"playing media during recording: {playback_ref} <- {asset.path}")
+            await self.backend.play_wav(playback_call, asset.path)
+            if post_roll:
+                await asyncio.sleep(post_roll)
+            await record_task
+        except Exception:
+            if record_task.done():
+                with suppress(Exception, asyncio.CancelledError):
+                    await record_task
+            else:
+                record_task.cancel()
+                with suppress(Exception, asyncio.CancelledError):
+                    await record_task
+            raise
+
+        self.recordings[name] = path
+        self.artifacts.record_event("recorded", call=recording_call.id, recording=name, path=str(path))
+        self.artifacts.record_event(
+            "recorded_during_playback",
+            playback_call=playback_call.id,
+            recording_call=recording_call.id,
+            recording=name,
+            path=str(path),
+            marker=asset.marker,
+        )
+        self._progress(f"recorded media: {path}")
+
+        should_assert_marker = bool(params.get("assert_marker", asset.marker is not None))
+        if should_assert_marker:
+            if asset.marker is None:
+                raise ScenarioError("record_during_playback assert_marker requires a marker")
+            self._assert_marker(path, asset.marker)
+
     async def _step_assert_marker(self, params: dict[str, Any]) -> None:
         """Run an ``assert_marker`` scenario step.
 
@@ -416,9 +578,7 @@ class CallLab:
         if recording is None:
             raise ScenarioError(f"Unknown recording: {params['recording']}")
         marker = str(params["marker"])
-        if not detect_marker(recording, marker):
-            raise BackendError(f"Marker {marker!r} was not detected in recording {recording}")
-        self.artifacts.record_event("marker_detected", recording=str(recording), marker=marker)
+        self._assert_marker(recording, marker)
 
     async def _step_hold(self, params: dict[str, Any]) -> None:
         """Run a ``hold`` scenario step.
@@ -498,6 +658,38 @@ class CallLab:
         )
         if not result.supported and not result.skipped:
             raise BackendError(f"Video smoke failed: {result.evidence}")
+
+    def _playback_asset_from_params(self, params: dict[str, Any]) -> MediaAsset:
+        """Prepare playback media from ``text`` or ``path`` step parameters.
+
+        :param params: Scenario step parameters.
+        :returns: Prepared media asset.
+        """
+
+        marker = str(params["marker"]) if params.get("marker") else None
+        if "text" in params:
+            return self.media_factory.prepare_tts(
+                text=str(params["text"]),
+                marker=marker,
+                voice=str(params["voice"]) if params.get("voice") else None,
+            )
+        return self.media_factory.prepare_wav(
+            source=Path(str(params["path"])),
+            marker=marker,
+        )
+
+    def _assert_marker(self, recording: Path, marker: str) -> None:
+        """Assert that a marker is present in a recording artifact.
+
+        :param recording: Recording WAV path.
+        :param marker: Marker identifier.
+        :returns: None.
+        :raises BackendError: If the marker cannot be detected.
+        """
+
+        if not detect_marker(recording, marker):
+            raise BackendError(f"Marker {marker!r} was not detected in recording {recording}")
+        self.artifacts.record_event("marker_detected", recording=str(recording), marker=marker)
 
     def _call(self, name: str) -> CallHandle:
         """Return a call handle saved under a scenario name.
@@ -613,6 +805,36 @@ def _should_stay_registered(params: dict[str, Any]) -> bool:
     """
 
     return bool(params.get("stay_registered", False)) or "stay_registered_for" in params
+
+
+def _wav_duration_seconds(path: Path) -> float:
+    """Return the duration of a WAV file.
+
+    :param path: WAV file path.
+    :returns: Duration in seconds.
+    :raises BackendError: If the WAV file cannot be inspected.
+    """
+
+    try:
+        with wave.open(str(path), "rb") as wav:
+            frame_rate = wav.getframerate()
+            if frame_rate <= 0:
+                raise BackendError(f"Invalid WAV frame rate for {path}: {frame_rate}")
+            return wav.getnframes() / frame_rate
+    except (OSError, EOFError, wave.Error) as exc:
+        raise BackendError(f"Unable to inspect WAV duration for {path}: {exc}") from exc
+
+
+def _exception_summary(exc: BaseException) -> str:
+    """Return a concise message for nested task-group exceptions.
+
+    :param exc: Exception or exception group to summarize.
+    :returns: Human-readable exception message.
+    """
+
+    if isinstance(exc, BaseExceptionGroup):
+        return "; ".join(_exception_summary(nested) for nested in exc.exceptions)
+    return str(exc)
 
 
 def _sip_host(uri: str) -> str | None:

@@ -2,29 +2,37 @@ name: basic-audio-marker
 steps:
   - action: register
     clients: [Heidi, Ken]
-  - action: call
-    client: Heidi
-    target: 7108
-    save_as: heidi_to_ken
-  - action: expect_incoming
-    client: Ken
-    save_as: ken_incoming
-  - action: answer
-    call: ken_incoming
-  - action: wait_state
-    call: heidi_to_ken
-    state: connected
-  - action: play_tts
-    call: heidi_to_ken
+  - action: parallel
+    branches:
+      Heidi:
+        - action: call
+          client: Heidi
+          target: Ken
+          use_target_extension: true
+          save_as: heidi_to_ken
+        - action: wait_state
+          call: heidi_to_ken
+          state: connected
+        - action: wait_media
+          call: heidi_to_ken
+      Ken:
+        - action: expect_incoming
+          client: Ken
+          save_as: ken_incoming
+        - action: answer
+          call: ken_incoming
+        - action: wait_state
+          call: ken_incoming
+          state: connected
+        - action: wait_media
+          call: ken_incoming
+  - action: record_during_playback
+    playback_call: heidi_to_ken
+    recording_call: ken_incoming
     text: "Webex Calling test marker."
     marker: marker-basic-audio
-  - action: record
-    call: ken_incoming
-    seconds: 1.0
     save_as: ken_recording
-  - action: assert_marker
-    recording: ken_recording
-    marker: marker-basic-audio
+    pre_roll: 0.25
+    post_roll: 0.5
   - action: hangup
     calls: [heidi_to_ken, ken_incoming]
-
