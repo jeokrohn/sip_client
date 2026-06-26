@@ -11,7 +11,7 @@ from wxcalls.backends.base import CallHandle
 from wxcalls.backends.fake import FakeSipBackend
 from wxcalls.config import LabConfig, SipClientConfig
 from wxcalls.exceptions import ScenarioError
-from wxcalls.media import MediaAsset, generate_marker_tone
+from wxcalls.media import MediaAsset, create_silence_wav, generate_marker_tone
 from wxcalls.orchestrator import CallLab
 from wxcalls.scenario import parse_scenario
 
@@ -87,6 +87,39 @@ class TimingFakeSipBackend(FakeSipBackend):
         self.media_events.append(("record_start", loop.time()))
         await super().record_wav(call, output_path, seconds)
         self.media_events.append(("record_end", loop.time()))
+
+
+class CancellableRecordSipBackend(FakeSipBackend):
+    """Fake backend that records whether overlap recording is cancelled."""
+
+    def __init__(self) -> None:
+        """Create a cancellation-aware fake backend.
+
+        :returns: None.
+        """
+
+        super().__init__()
+        self.record_cancelled = False
+        self.requested_record_seconds: float | None = None
+
+    async def record_wav(self, call: CallHandle, output_path: Path, seconds: float) -> None:
+        """Keep recording until cancelled and leave a finalized WAV artifact.
+
+        :param call: Call handle being recorded.
+        :param output_path: Destination recording path.
+        :param seconds: Requested recording duration.
+        :returns: None.
+        :raises asyncio.CancelledError: If the orchestrator stops recording.
+        """
+
+        self.requested_record_seconds = seconds
+        try:
+            await asyncio.sleep(seconds)
+        except asyncio.CancelledError:
+            self.record_cancelled = True
+            raise
+        finally:
+            create_silence_wav(output_path, seconds=0.01)
 
 
 @pytest.mark.parametrize("use_hold_resume", [False, True])
@@ -262,6 +295,57 @@ def test_record_during_playback_starts_recording_before_playback(tmp_path: Path)
     asyncio.run(run())
     event_times = {name: timestamp for name, timestamp in backend.media_events}
     assert event_times["record_start"] < event_times["play"]
+    assert lab.recordings["bob_recording"].exists()
+
+
+def test_record_during_playback_auto_duration_stops_after_playback(tmp_path: Path) -> None:
+    """Verify automatic overlap recording ends after playback returns.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
+    backend = CancellableRecordSipBackend()
+    lab = _lab(tmp_path, backend=backend)
+    scenario = parse_scenario(
+        {
+            "name": "overlap-auto-duration",
+            "steps": [
+                {"action": "register", "clients": ["alice", "bob"]},
+                {"action": "call", "client": "alice", "target": "bob", "save_as": "alice_to_bob"},
+                {"action": "expect_incoming", "client": "bob", "save_as": "bob_incoming"},
+                {"action": "answer", "call": "bob_incoming"},
+                {"action": "wait_state", "call": "alice_to_bob", "state": "connected"},
+                {
+                    "action": "record_during_playback",
+                    "playback_call": "alice_to_bob",
+                    "recording_call": "bob_incoming",
+                    "text": "hello",
+                    "marker": "marker-overlap",
+                    "pre_roll": 0.01,
+                    "post_roll": 0.01,
+                    "save_as": "bob_recording",
+                    "assert_marker": False,
+                },
+            ],
+        }
+    )
+
+    async def run() -> None:
+        """Run the automatic-duration overlap scenario inside a managed lab.
+
+        :returns: None.
+        """
+
+        async with lab:
+            await lab.run_scenario(scenario)
+
+    import asyncio
+
+    asyncio.run(run())
+    assert backend.record_cancelled
+    assert backend.requested_record_seconds is not None
+    assert backend.requested_record_seconds > 5.0
     assert lab.recordings["bob_recording"].exists()
 
 

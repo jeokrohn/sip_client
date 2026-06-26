@@ -65,6 +65,30 @@ def test_detect_marker_rejects_near_silent_tone(tmp_path: Path) -> None:
     assert not detect_marker(wav_path, marker)
 
 
+def test_detect_marker_rejects_low_level_frequency_leakage(tmp_path: Path) -> None:
+    """Verify incidental marker-frequency energy is not accepted as a marker.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
+    marker = "marker-leakage"
+    wav_path = tmp_path / "leakage.wav"
+    sample_rate = 16_000
+    marker_tone = marker_frequency(marker)
+    dominant_tone = 3_000
+    with wave.open(str(wav_path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        for index in range(int(sample_rate * 2.0)):
+            dominant_sample = 9_000 * math.sin(2 * math.pi * dominant_tone * index / sample_rate)
+            leakage_sample = 900 * math.sin(2 * math.pi * marker_tone * index / sample_rate)
+            wav.writeframesraw(struct.pack("<h", int(dominant_sample + leakage_sample)))
+
+    assert not detect_marker(wav_path, marker)
+
+
 def test_detect_marker_rejects_unreadable_wav(tmp_path: Path) -> None:
     """Verify unreadable marker input raises a framework media error.
 

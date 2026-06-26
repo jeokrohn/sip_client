@@ -230,13 +230,22 @@ def concatenate_wavs(paths: list[Path], output_path: Path) -> None:
         wav.writeframes(b"".join(frames))
 
 
-def detect_marker(path: Path, marker: str, threshold: float = 0.08, minimum_peak: int = 256) -> bool:
+def detect_marker(
+    path: Path,
+    marker: str,
+    threshold: float = 0.35,
+    minimum_peak: int = 256,
+    window_seconds: float = 0.25,
+    minimum_duration: float = 0.35,
+) -> bool:
     """Detect whether a marker tone is present in a WAV recording.
 
     :param path: WAV file to analyze.
     :param marker: Marker identifier.
-    :param threshold: Minimum normalized tone energy ratio.
+    :param threshold: Minimum normalized tone energy ratio in an analysis window.
     :param minimum_peak: Minimum absolute sample value required before frequency detection.
+    :param window_seconds: Duration of each analysis window.
+    :param minimum_duration: Minimum sustained marker-like duration.
     :returns: ``True`` if the marker frequency is detected.
     :raises MediaError: If the WAV file cannot be read.
     """
@@ -247,9 +256,15 @@ def detect_marker(path: Path, marker: str, threshold: float = 0.08, minimum_peak
     if max(abs(sample) for sample in samples) < minimum_peak:
         return False
     frequency = marker_frequency(marker)
-    signal_power = sum(sample * sample for sample in samples) or 1.0
-    tone_power = _goertzel_power(samples, sample_rate, frequency)
-    return (tone_power / signal_power) >= threshold
+    return _has_sustained_marker_tone(
+        samples=samples,
+        sample_rate=sample_rate,
+        frequency=frequency,
+        threshold=threshold,
+        minimum_peak=minimum_peak,
+        window_seconds=window_seconds,
+        minimum_duration=minimum_duration,
+    )
 
 
 def marker_frequency(marker: str) -> int:
@@ -301,6 +316,93 @@ def _goertzel_power(samples: list[int], sample_rate: int, frequency: float) -> f
         prev2 = prev
         prev = value
     return prev2 * prev2 + prev * prev - coefficient * prev * prev2
+
+
+def _has_sustained_marker_tone(
+    samples: list[int],
+    sample_rate: int,
+    frequency: float,
+    threshold: float,
+    minimum_peak: int,
+    window_seconds: float,
+    minimum_duration: float,
+) -> bool:
+    """Return whether a marker tone dominates consecutive analysis windows.
+
+    :param samples: PCM samples.
+    :param sample_rate: Sample rate in hertz.
+    :param frequency: Marker frequency to detect.
+    :param threshold: Minimum normalized tone energy ratio.
+    :param minimum_peak: Minimum absolute sample value for a candidate window.
+    :param window_seconds: Duration of each analysis window.
+    :param minimum_duration: Minimum sustained marker-like duration.
+    :returns: ``True`` when a sustained marker tone is present.
+    """
+
+    window_size = max(1, min(len(samples), int(window_seconds * sample_rate)))
+    hop_size = max(1, window_size // 2)
+    required_hits = _required_consecutive_hits(
+        window_size=window_size,
+        hop_size=hop_size,
+        sample_rate=sample_rate,
+        minimum_duration=minimum_duration,
+    )
+    consecutive_hits = 0
+    last_start = max(0, len(samples) - window_size)
+    starts = list(range(0, last_start + 1, hop_size))
+    if starts[-1] != last_start:
+        starts.append(last_start)
+
+    for start in starts:
+        chunk = samples[start : start + window_size]
+        if max(abs(sample) for sample in chunk) < minimum_peak:
+            consecutive_hits = 0
+            continue
+        if _normalized_tone_energy_ratio(chunk, sample_rate, frequency) >= threshold:
+            consecutive_hits += 1
+            if consecutive_hits >= required_hits:
+                return True
+        else:
+            consecutive_hits = 0
+    return False
+
+
+def _required_consecutive_hits(
+    window_size: int,
+    hop_size: int,
+    sample_rate: int,
+    minimum_duration: float,
+) -> int:
+    """Return the number of consecutive windows needed for a sustained marker.
+
+    :param window_size: Analysis window length in samples.
+    :param hop_size: Hop length between windows in samples.
+    :param sample_rate: Sample rate in hertz.
+    :param minimum_duration: Minimum sustained marker-like duration.
+    :returns: Required consecutive candidate windows.
+    """
+
+    window_duration = window_size / sample_rate
+    if minimum_duration <= window_duration:
+        return 1
+    hop_duration = hop_size / sample_rate
+    return math.ceil((minimum_duration - window_duration) / hop_duration) + 1
+
+
+def _normalized_tone_energy_ratio(samples: list[int], sample_rate: int, frequency: float) -> float:
+    """Compute marker-bin energy normalized so a pure tone is close to ``1.0``.
+
+    :param samples: PCM samples.
+    :param sample_rate: Sample rate in hertz.
+    :param frequency: Frequency to measure in hertz.
+    :returns: Normalized tone energy ratio.
+    """
+
+    signal_power = sum(sample * sample for sample in samples)
+    if signal_power <= 0:
+        return 0.0
+    tone_power = _goertzel_power(samples, sample_rate, frequency)
+    return tone_power / (signal_power * (len(samples) / 2))
 
 
 def _run_media_command(command: list[str], message: str) -> None:

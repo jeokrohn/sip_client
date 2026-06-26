@@ -19,6 +19,8 @@ from wxcalls.exceptions import TimeoutError as WxTimeoutError
 from wxcalls.media import MediaAsset, MediaFactory, detect_marker
 from wxcalls.scenario import Scenario, ScenarioStep, load_scenario
 
+_RECORD_DURING_PLAYBACK_GRACE_SECONDS = 10.0
+
 
 class CallLab:
     """Coordinates clients, call handles, media, and scenario execution."""
@@ -520,13 +522,19 @@ class CallLab:
         asset = self._playback_asset_from_params(params)
         pre_roll = float(params.get("pre_roll", 0.25))
         post_roll = float(params.get("post_roll", 0.5))
-        seconds = float(params.get("seconds", pre_roll + _wav_duration_seconds(asset.path) + post_roll))
+        explicit_seconds = params.get("seconds")
+        asset_seconds = _wav_duration_seconds(asset.path)
+        recording_seconds = (
+            float(explicit_seconds)
+            if explicit_seconds is not None
+            else pre_roll + asset_seconds + post_roll + _RECORD_DURING_PLAYBACK_GRACE_SECONDS
+        )
         name = str(params.get("save_as", "recording"))
         path = self.artifacts.path_for("media", name, ".wav")
 
         self._progress(f"recording media during playback: {recording_ref} -> {path}")
         record_task = asyncio.create_task(
-            self.backend.record_wav(recording_call, path, seconds=seconds),
+            self.backend.record_wav(recording_call, path, seconds=recording_seconds),
             name=f"wxcalls-record-{name}",
         )
         try:
@@ -536,7 +544,14 @@ class CallLab:
             await self.backend.play_wav(playback_call, asset.path)
             if post_roll:
                 await asyncio.sleep(post_roll)
-            await record_task
+            if explicit_seconds is None and not record_task.done():
+                await asyncio.sleep(0)
+            if explicit_seconds is None and not record_task.done():
+                record_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await record_task
+            else:
+                await record_task
         except Exception:
             if record_task.done():
                 with suppress(Exception, asyncio.CancelledError):

@@ -306,6 +306,38 @@ def test_record_wav_finalizes_recorder_before_return(tmp_path: Path) -> None:
     assert backend.calls["call-1"].recorders == []
 
 
+def test_record_wav_finalizes_recorder_when_cancelled(tmp_path: Path) -> None:
+    """Verify cancelled recordings still stop and finalize their WAV artifact.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
+    backend = _backend_with_fake_recording(stop_raises=False)
+    output = tmp_path / "recording.wav"
+    call = CallHandle(id="call-1", client_name="alice", remote_uri="sip:bob")
+
+    async def run() -> None:
+        """Start and cancel a recording task.
+
+        :returns: None.
+        """
+
+        task = asyncio.create_task(backend.record_wav(call, output, 30.0))
+        while not backend.pj.created_recorders:
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    recorder = backend.pj.created_recorders[0]
+    assert output.read_bytes().startswith(b"RIFF")
+    assert recorder.finalized
+    assert recorder.stopped
+    assert backend.calls["call-1"].recorders == []
+
+
 def test_record_wav_rejects_unreadable_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
