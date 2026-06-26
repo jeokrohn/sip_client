@@ -29,5 +29,14 @@ clients:
     extension: "7108"
     transport: tls
     enable_video: false
+  - name: Austin
+    id_uri: "sip:ejaskfmyez_AFFEAFFE0004@90236926.us10.bcld.webex.com"
+    registrar_uri: "sip:90236926.us10.bcld.webex.com"
+    proxy_uri: "sips:jfk06.hosted-us.bcld.webex.com;lr"
+    username_env: WX_SIP_AUSTIN_USER
+    password_env: WX_SIP_AUSTIN_PASSWORD
+    extension: "7105"
+    transport: tls
+    enable_video: false
 
 targets: []

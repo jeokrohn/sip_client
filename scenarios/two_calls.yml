@@ -1,0 +1,76 @@
+name: basic-audio-marker
+steps:
+  - action: register
+    clients: [Leslie, Heidi, Ken, Austin]
+  - action: parallel
+    branches:
+      Heidi_Ken:
+        - action: parallel
+          branches:
+            Heidi:
+              - action: call
+                client: Heidi
+                target: Ken
+                use_target_extension: true
+                save_as: heidi_to_ken
+              - action: wait_state
+                call: heidi_to_ken
+                state: connected
+              - action: wait_media
+                call: heidi_to_ken
+            Ken:
+              - action: expect_incoming
+                client: Ken
+                save_as: ken_incoming
+              - action: answer
+                call: ken_incoming
+              - action: wait_state
+                call: ken_incoming
+                state: connected
+              - action: wait_media
+                call: ken_incoming
+        - action: record_during_playback
+          playback_call: heidi_to_ken
+          recording_call: ken_incoming
+          text: "Webex Calling test marker."
+          marker: marker-basic-audio
+          save_as: ken_recording
+          pre_roll: 0.25
+          post_roll: 0.5
+        - action: hangup
+          calls: [heidi_to_ken, ken_incoming]
+      Leslie_Austin:
+        - action: parallel
+          branches:
+            Leslie:
+              - action: call
+                client: Leslie
+                target: Austin
+                use_target_extension: true
+                save_as: leslie_to_austin
+              - action: wait_state
+                call: leslie_to_austin
+                state: connected
+              - action: wait_media
+                call: leslie_to_austin
+            Austin:
+              - action: expect_incoming
+                client: Austin
+                save_as: austin_incoming
+              - action: answer
+                call: austin_incoming
+              - action: wait_state
+                call: austin_incoming
+                state: connected
+              - action: wait_media
+                call: austin_incoming
+        - action: record_during_playback
+          playback_call: leslie_to_austin
+          recording_call: austin_incoming
+          text: "Webex Calling test marker."
+          marker: marker-basic-audio
+          save_as: austin_recording
+          pre_roll: 0.25
+          post_roll: 0.5
+        - action: hangup
+          calls: [leslie_to_austin, austin_incoming]

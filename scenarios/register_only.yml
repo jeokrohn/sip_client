@@ -1,5 +1,5 @@
 name: registration-smoke
 steps:
   - action: register
-    client: [Leslie, Heidi, Ken]
+    client: [Leslie, Heidi, Ken, Austin]
     timeout: 30
