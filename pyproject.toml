@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 license = { text = "Proprietary" }
 authors = [{ name = "Internal" }]
 dependencies = [
+    "pjsua2",
     "pydantic>=2.0",
     "PyYAML>=6.0.1",
 ]
@@ -46,6 +47,9 @@ strict = true
 ignore_missing_imports = false
 no_implicit_optional = false
 warn_unused_configs = true
+
+[tool.uv.sources]
+pjsua2 = { path = "../../../../../../Documents/workspace/pjproject/pjsip-apps/src/swig/python/dist/pjsua2-2.17.dev0-cp313-cp313-macosx_11_0_arm64.whl" }
 
 [dependency-groups]
 dev = [
