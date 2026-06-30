@@ -71,14 +71,18 @@ behaviors:
               - action: hangup
                 call: outbound
 
-          # Once hangup completes, decrement the endpoint-local loop counter.
+          # Once the call disconnects, decrement the endpoint-local loop
+          # counter. If the decrement reaches 0, the counter_reached rule below
+          # preempts the transition to waiting_to_loop and ends the behavior.
           call_state:
             call: outbound
             state: disconnected
             actions:
+              - action: cancel_timer
+                name: hangup_delay
               - action: decrement_counter
                 name: calls_remaining
-            next_state: loop
+            next_state: waiting_to_loop
 
           # Counter updates synchronously check counter_reached rules in the
           # current state before applying the triggering rule's next_state, so
@@ -88,11 +92,25 @@ behaviors:
             value: 0
             next_state: done
 
+      waiting_to_loop:
+        entry:
+          # Delay the next outbound attempt instead of re-entering loop
+          # immediately after the previous call disconnects.
+          - action: start_timer
+            name: loop_delay
+            seconds: 5
+        on:
+          timer_expired:
+            timer: loop_delay
+            next_state: loop
+
       done:
         entry:
           # Defensive cleanup in case a timer remains active when the loop ends.
           - action: cancel_timer
             name: hangup_delay
+          - action: cancel_timer
+            name: loop_delay
 
   # Heidi's behavior registers, auto-answers inbound calls, and returns to idle
   # after Leslie disconnects.
@@ -117,11 +135,18 @@ behaviors:
             next_state: ringing
 
       ringing:
+        # answer call after a 2-second delay to simulate a human answering the phone.
         entry:
-          # answer defaults to Heidi's endpoint context and uses the local alias.
-          - action: answer
-            call: inbound
+          # start a timer
+          - action: start_timer
+            name: answer_delay
+            seconds: 4
         on:
+          timer_expired:
+            timer: answer_delay
+            actions:
+                - action: answer
+                  call: inbound
           call_state:
             call: inbound
             state: connected
