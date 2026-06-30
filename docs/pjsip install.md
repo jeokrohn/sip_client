@@ -1,5 +1,9 @@
 ## Needed on macOS
 
+This project uses the PJSIP/PJSUA2 open-source license path and is distributed as
+`GPL-2.0-or-later`. Keep PJSIP license notices and corresponding source availability in mind when
+redistributing builds that include or require these bindings.
+
 1. build tools
 
     xcode-select --install
@@ -40,7 +44,7 @@ Alternative: install with uv
       make PYTHON_EXE=/Users/jkrohn/Library/CloudStorage/Dropbox/ln/workspace/sip_client/.venv/bin/python
 
       cd /Users/jkrohn/Library/CloudStorage/Dropbox/ln/workspace/sip_client
-      uv add /Users/jkrohn/Documents/workspace/pjproject/pjsip-apps/src/swig/python/dist/pjsua2-2.17.dev0-cp313-cp313-macosx_11_0_arm64.whl 
+      uv pip install /Users/jkrohn/Documents/workspace/pjproject/pjsip-apps/src/swig/python/dist/pjsua2-2.17.dev0-cp313-cp313-macosx_11_0_arm64.whl 
 
 5. Verify the installation
 

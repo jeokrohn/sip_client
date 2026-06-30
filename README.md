@@ -1,6 +1,6 @@
 # Webex Calling SIP Test Framework Prototype
 
-`wxcalls` is an internal Python prototype for testing Webex Calling call flows with
+`wxcalls` is an open-source Python prototype for testing Webex Calling call flows with
 pre-provisioned generic third-party SIP phone credentials.
 
 The first version is Mac-first and scenario-oriented:
@@ -18,8 +18,9 @@ The first version is Mac-first and scenario-oriented:
 uv sync --extra dev
 ```
 
-PJSUA2 is a native dependency and is not declared as a PyPI dependency. The framework imports
-`pjsua2` only when the live backend is used. The fake backend and unit tests run without it.
+PJSUA2 is a native dependency and is not declared as a package dependency. The framework imports
+`pjsua2` only when the live backend is used. Install locally built PJSUA2 bindings into the active
+environment before live backend runs. The fake backend and unit tests run without it.
 
 ## Configuration
 
@@ -228,7 +229,9 @@ steps:
 `stay_registered_for` is in seconds. For explicit durations, `require_reregistration` defaults to
 `false`; set it to `true` when the scenario should fail unless a refresh is observed.
 
-## Notes
+## License
 
-This is an internal prototype. PJSIP/PJSUA2 build and licensing requirements should be reviewed
-before packaging the framework for wider internal use or external distribution.
+This project is distributed under the GNU General Public License, version 2 or later
+(`GPL-2.0-or-later`). The live backend uses PJSIP/PJSUA2 on its GPL-compatible open-source path.
+Do not redistribute a non-GPL-compatible combined build unless you have an appropriate commercial
+PJSIP license.
