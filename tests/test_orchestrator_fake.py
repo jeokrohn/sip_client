@@ -1,3 +1,5 @@
+"""Fake backend orchestration tests."""
+
 from __future__ import annotations
 
 import asyncio
@@ -165,7 +167,8 @@ def test_fake_backend_runs_audio_marker_scenario(tmp_path: Path, use_hold_resume
         ]
     )
 
-    lab = _lab(tmp_path)
+    messages: list[str] = []
+    lab = _lab(tmp_path, progress_reporter=messages.append)
     scenario = parse_scenario({"name": "fake-audio", "steps": scenario_steps})
 
     async def run() -> None:
@@ -190,7 +193,8 @@ def test_fake_backend_runs_parallel_audio_marker_scenario(tmp_path: Path) -> Non
     :returns: None.
     """
 
-    lab = _lab(tmp_path)
+    messages: list[str] = []
+    lab = _lab(tmp_path, progress_reporter=messages.append)
     scenario = parse_scenario(
         {
             "name": "parallel-audio",
@@ -512,6 +516,1067 @@ def test_fake_backend_pairs_named_target_extension_to_owner(tmp_path: Path) -> N
     asyncio.run(run())
     assert lab.calls["alice_to_bob"].remote_uri == "sip:7108@registrar.example.invalid"
     assert lab.calls["bob_incoming"].client_name == "bob"
+
+
+def test_endpoint_behavior_auto_answers_incoming_call(tmp_path: Path) -> None:
+    """Verify a behavior endpoint can answer without explicit callee steps.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
+    lab = _lab(tmp_path)
+    scenario = parse_scenario(
+        {
+            "name": "behavior-auto-answer",
+            "behaviors": {
+                "auto_answer": {
+                    "initial_state": "idle",
+                    "states": {
+                        "idle": {
+                            "on": {
+                                "call_received": {
+                                    "save_call_as": "inbound",
+                                    "actions": [{"action": "answer", "call": "inbound"}],
+                                    "next_state": "connected",
+                                }
+                            }
+                        },
+                        "connected": {
+                            "on": {
+                                "call_state": {
+                                    "state": "disconnected",
+                                    "next_state": "idle",
+                                }
+                            }
+                        },
+                    },
+                }
+            },
+            "endpoints": {"bob": {"client": "bob", "behavior": "auto_answer"}},
+            "steps": [
+                {"action": "register", "clients": ["alice", "bob"]},
+                {"action": "call", "client": "alice", "target": "bob", "save_as": "alice_to_bob"},
+                {"action": "wait_state", "call": "alice_to_bob", "state": "connected"},
+                {"action": "wait_media", "call": "bob.inbound"},
+            ],
+        }
+    )
+
+    async def run() -> None:
+        """Run the auto-answer behavior scenario inside a managed lab.
+
+        :returns: None.
+        """
+
+        async with lab:
+            await lab.run_scenario(scenario)
+
+    import asyncio
+
+    asyncio.run(run())
+    assert lab.calls["bob.inbound"].state == "connected"
+    assert any(event["event"] == "behavior_started" and event["endpoint"] == "bob" for event in lab.artifacts.timeline)
+    assert any(
+        event["event"] == "behavior_transition" and event["to_state"] == "connected" for event in lab.artifacts.timeline
+    )
+
+
+def test_endpoint_behavior_timer_holds_and_resumes_call(tmp_path: Path) -> None:
+    """Verify behavior timers can drive hold and resume actions.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
+    lab = _lab(tmp_path)
+    scenario = parse_scenario(
+        {
+            "name": "behavior-hold-resume",
+            "behaviors": {
+                "answer_hold_resume": {
+                    "initial_state": "idle",
+                    "states": {
+                        "idle": {
+                            "on": {
+                                "call_received": {
+                                    "save_call_as": "inbound",
+                                    "actions": [{"action": "answer", "call": "inbound"}],
+                                    "next_state": "connected",
+                                }
+                            }
+                        },
+                        "connected": {
+                            "on": {
+                                "call_state": {
+                                    "state": "connected",
+                                    "actions": [
+                                        {
+                                            "action": "start_timer",
+                                            "name": "hold_delay",
+                                            "seconds": 0.01,
+                                        }
+                                    ],
+                                },
+                                "timer_expired": {
+                                    "timer": "hold_delay",
+                                    "actions": [
+                                        {"action": "hold", "call": "inbound"},
+                                        {
+                                            "action": "start_timer",
+                                            "name": "resume_delay",
+                                            "seconds": 0.01,
+                                        },
+                                    ],
+                                    "next_state": "held",
+                                },
+                            }
+                        },
+                        "held": {
+                            "on": {
+                                "timer_expired": {
+                                    "timer": "resume_delay",
+                                    "actions": [{"action": "resume", "call": "inbound"}],
+                                    "next_state": "connected",
+                                }
+                            }
+                        },
+                    },
+                }
+            },
+            "endpoints": {"bob": {"client": "bob", "behavior": "answer_hold_resume"}},
+            "steps": [
+                {"action": "register", "clients": ["alice", "bob"]},
+                {"action": "call", "client": "alice", "target": "bob", "save_as": "alice_to_bob"},
+                {"action": "wait_state", "call": "alice_to_bob", "state": "connected"},
+                {"action": "wait_state", "call": "bob.inbound", "state": "held", "timeout": 2},
+                {"action": "wait_state", "call": "bob.inbound", "state": "connected", "timeout": 2},
+            ],
+        }
+    )
+
+    async def run() -> None:
+        """Run the timer behavior scenario inside a managed lab.
+
+        :returns: None.
+        """
+
+        async with lab:
+            await lab.run_scenario(scenario)
+
+    import asyncio
+
+    asyncio.run(run())
+    assert lab.calls["bob.inbound"].state == "connected"
+    assert any(
+        event["event"] == "call_held" and event["call"] == lab.calls["bob.inbound"].id
+        for event in lab.artifacts.timeline
+    )
+    assert any(
+        event["event"] == "call_resumed" and event["call"] == lab.calls["bob.inbound"].id
+        for event in lab.artifacts.timeline
+    )
+
+
+def test_endpoint_behavior_registers_and_places_outbound_call_from_entry(tmp_path: Path) -> None:
+    """Verify entry actions can register an endpoint and place an outbound call.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
+    lab = _lab(tmp_path)
+    scenario = parse_scenario(
+        {
+            "name": "behavior-owned-outbound-call",
+            "behaviors": {
+                "outbound_caller": {
+                    "initial_state": "unregistered",
+                    "states": {
+                        "unregistered": {
+                            "entry": [{"action": "register"}],
+                            "on": {"registered": {"next_state": "idle"}},
+                        },
+                        "idle": {
+                            "entry": [
+                                {
+                                    "action": "call",
+                                    "target": "webex_user",
+                                    "save_as": "outbound",
+                                }
+                            ],
+                            "on": {
+                                "call_state": {
+                                    "call": "outbound",
+                                    "state": "connected",
+                                    "next_state": "connected",
+                                }
+                            },
+                        },
+                        "connected": {
+                            "on": {
+                                "call_state": {
+                                    "call": "outbound",
+                                    "state": "disconnected",
+                                    "next_state": "idle",
+                                }
+                            }
+                        },
+                    },
+                }
+            },
+            "endpoints": {"alice": {"client": "alice", "behavior": "outbound_caller"}},
+            "steps": [
+                {
+                    "action": "wait_behavior_state",
+                    "endpoint": "alice",
+                    "state": "connected",
+                    "timeout": 2,
+                }
+            ],
+        }
+    )
+
+    async def run() -> None:
+        """Run the behavior-owned outbound scenario inside a managed lab.
+
+        :returns: None.
+        """
+
+        async with lab:
+            await lab.run_scenario(scenario)
+
+    import asyncio
+
+    asyncio.run(run())
+    assert "alice" in lab.registrations
+    assert lab.calls["alice.outbound"].client_name == "alice"
+    assert lab.calls["alice.outbound"].state == "connected"
+    assert any(
+        event["event"] == "behavior_state_seen" and event["state"] == "connected" for event in lab.artifacts.timeline
+    )
+    assert any(
+        event["event"] == "behavior_transition"
+        and event["from_state"] == "unregistered"
+        and event["to_state"] == "idle"
+        for event in lab.artifacts.timeline
+    )
+    assert any(
+        event["event"] == "behavior_transition" and event["from_state"] == "idle" and event["to_state"] == "connected"
+        for event in lab.artifacts.timeline
+    )
+
+
+def test_endpoint_behavior_trigger_barrier_starts_call_after_callee_ready(tmp_path: Path) -> None:
+    """Verify scripted triggers can start behavior calls after readiness waits.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
+    messages: list[str] = []
+    lab = _lab(tmp_path, progress_reporter=messages.append)
+    scenario = parse_scenario(
+        {
+            "name": "behavior-trigger-barrier",
+            "behaviors": {
+                "caller": {
+                    "initial_state": "unregistered",
+                    "states": {
+                        "unregistered": {
+                            "entry": [{"action": "register"}],
+                            "on": {"registered": {"next_state": "idle"}},
+                        },
+                        "idle": {
+                            "on": {
+                                "scenario_trigger": {
+                                    "name": "start_call",
+                                    "actions": [
+                                        {
+                                            "action": "call",
+                                            "target": "bob",
+                                            "use_target_extension": True,
+                                            "save_as": "outbound",
+                                        }
+                                    ],
+                                    "next_state": "calling",
+                                }
+                            }
+                        },
+                        "calling": {
+                            "on": {
+                                "call_state": {
+                                    "call": "outbound",
+                                    "state": "connected",
+                                    "next_state": "connected",
+                                }
+                            }
+                        },
+                        "connected": {
+                            "on": {
+                                "call_state": {
+                                    "call": "outbound",
+                                    "state": "disconnected",
+                                    "next_state": "idle",
+                                }
+                            }
+                        },
+                    },
+                },
+                "callee": {
+                    "initial_state": "unregistered",
+                    "states": {
+                        "unregistered": {
+                            "entry": [{"action": "register"}],
+                            "on": {"registered": {"next_state": "idle"}},
+                        },
+                        "idle": {"on": {"call_received": {"save_call_as": "inbound", "next_state": "ringing"}}},
+                        "ringing": {
+                            "entry": [{"action": "answer", "call": "inbound"}],
+                            "on": {
+                                "call_state": {
+                                    "call": "inbound",
+                                    "state": "connected",
+                                    "next_state": "connected",
+                                }
+                            },
+                        },
+                        "connected": {
+                            "on": {
+                                "call_state": {
+                                    "call": "inbound",
+                                    "state": "disconnected",
+                                    "next_state": "idle",
+                                }
+                            }
+                        },
+                    },
+                },
+            },
+            "endpoints": {
+                "alice": {"client": "alice", "behavior": "caller"},
+                "bob": {"client": "bob", "behavior": "callee"},
+            },
+            "steps": [
+                {"action": "wait_behavior_state", "endpoint": "alice", "state": "idle", "timeout": 2},
+                {"action": "wait_behavior_state", "endpoint": "bob", "state": "idle", "timeout": 2},
+                {"action": "trigger_behavior", "endpoint": "alice", "name": "start_call"},
+                {"action": "wait_behavior_state", "endpoint": "alice", "state": "connected", "timeout": 2},
+                {"action": "wait_behavior_state", "endpoint": "bob", "state": "connected", "timeout": 2},
+            ],
+        }
+    )
+
+    async def run() -> None:
+        """Run the trigger-barrier behavior scenario inside a managed lab.
+
+        :returns: None.
+        """
+
+        async with lab:
+            await lab.run_scenario(scenario)
+
+    asyncio.run(run())
+    assert lab.calls["alice.outbound"].state == "connected"
+    assert lab.calls["bob.inbound"].state == "connected"
+
+    def first_event_index(**criteria: object) -> int:
+        """Return the first timeline index matching all criteria.
+
+        :param criteria: Event key/value pairs to match.
+        :returns: Zero-based timeline index.
+        :raises AssertionError: If no event matches.
+        """
+
+        for index, event in enumerate(lab.artifacts.timeline):
+            if all(event.get(key) == value for key, value in criteria.items()):
+                return index
+        raise AssertionError(f"Missing event matching {criteria!r}")
+
+    alice_ready_index = first_event_index(event="behavior_state_seen", endpoint="alice", state="idle")
+    bob_ready_index = first_event_index(event="behavior_state_seen", endpoint="bob", state="idle")
+    trigger_step_index = first_event_index(event="step_started", action="trigger_behavior")
+    call_placed_index = first_event_index(event="call_placed", client="alice")
+
+    assert alice_ready_index < trigger_step_index
+    assert bob_ready_index < trigger_step_index
+    assert trigger_step_index < call_placed_index
+    assert any(
+        event["event"] == "behavior_event"
+        and event["endpoint"] == "alice"
+        and event["trigger"] == "scenario_trigger"
+        and event["trigger_name"] == "start_call"
+        for event in lab.artifacts.timeline
+    )
+    assert "behavior alice/caller state=unregistered event=entry next_state=unregistered action=register" in messages
+    assert "behavior bob/callee state=unregistered event=registered next_state=idle action=-" in messages
+    assert (
+        "behavior alice/caller state=idle event=scenario_trigger:start_call next_state=calling action=call" in messages
+    )
+    assert "behavior alice/caller state=calling event=call_state:connected next_state=connected action=-" in messages
+
+
+def test_endpoint_behavior_failure_cancels_scenario(tmp_path: Path) -> None:
+    """Verify behavior action failures surface with endpoint context.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
+    lab = _lab(tmp_path)
+    scenario = parse_scenario(
+        {
+            "name": "behavior-failure",
+            "behaviors": {
+                "broken": {
+                    "initial_state": "idle",
+                    "states": {
+                        "idle": {
+                            "on": {
+                                "call_received": {
+                                    "save_call_as": "inbound",
+                                    "actions": [{"action": "answer", "call": "missing"}],
+                                }
+                            }
+                        }
+                    },
+                }
+            },
+            "endpoints": {"bob": {"client": "bob", "behavior": "broken"}},
+            "steps": [
+                {"action": "register", "clients": ["alice", "bob"]},
+                {"action": "call", "client": "alice", "target": "bob", "save_as": "alice_to_bob"},
+                {"action": "wait_state", "call": "alice_to_bob", "state": "connected", "timeout": 2},
+            ],
+        }
+    )
+
+    async def run() -> None:
+        """Run the failing behavior scenario inside a managed lab.
+
+        :returns: None.
+        """
+
+        async with lab:
+            await lab.run_scenario(scenario)
+
+    import asyncio
+
+    with pytest.raises(ScenarioError, match="missing"):
+        asyncio.run(run())
+    assert any(event["event"] == "behavior_failed" and event["endpoint"] == "bob" for event in lab.artifacts.timeline)
+
+
+def test_endpoint_behavior_rejects_duplicate_call_alias_from_entry(tmp_path: Path) -> None:
+    """Verify behavior-owned calls cannot overwrite scoped call aliases.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
+    lab = _lab(tmp_path)
+    scenario = parse_scenario(
+        {
+            "name": "behavior-duplicate-alias",
+            "behaviors": {
+                "looping_caller": {
+                    "initial_state": "unregistered",
+                    "states": {
+                        "unregistered": {
+                            "entry": [{"action": "register"}],
+                            "on": {"registered": {"next_state": "idle"}},
+                        },
+                        "idle": {
+                            "entry": [
+                                {
+                                    "action": "call",
+                                    "target": "webex_user",
+                                    "save_as": "outbound",
+                                }
+                            ],
+                            "on": {
+                                "call_state": {
+                                    "call": "outbound",
+                                    "state": "connected",
+                                    "next_state": "idle",
+                                }
+                            },
+                        },
+                        "done": {
+                            "on": {
+                                "timer_expired": {
+                                    "timer": "unused",
+                                }
+                            }
+                        },
+                    },
+                }
+            },
+            "endpoints": {"alice": {"client": "alice", "behavior": "looping_caller"}},
+            "steps": [{"action": "wait_behavior_state", "endpoint": "alice", "state": "done", "timeout": 2}],
+        }
+    )
+
+    async def run() -> None:
+        """Run the duplicate-alias behavior scenario inside a managed lab.
+
+        :returns: None.
+        """
+
+        async with lab:
+            await lab.run_scenario(scenario)
+
+    with pytest.raises(ScenarioError, match="call alias already exists"):
+        asyncio.run(run())
+
+
+def test_endpoint_behavior_reuses_disconnected_call_aliases_for_loop(tmp_path: Path) -> None:
+    """Verify looping endpoint behaviors can intentionally reuse call aliases.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
+    lab = _lab(tmp_path)
+    scenario = parse_scenario(
+        {
+            "name": "behavior-reuse-call-aliases",
+            "behaviors": {
+                "caller": {
+                    "initial_state": "unregistered",
+                    "states": {
+                        "unregistered": {
+                            "entry": [{"action": "register"}],
+                            "on": {"registered": {"next_state": "idle"}},
+                        },
+                        "idle": {
+                            "on": {
+                                "scenario_trigger": {
+                                    "name": "place_call",
+                                    "actions": [
+                                        {
+                                            "action": "call",
+                                            "target": "bob",
+                                            "use_target_extension": True,
+                                            "save_as": "outbound",
+                                            "reuse_alias": True,
+                                        }
+                                    ],
+                                    "next_state": "calling",
+                                }
+                            }
+                        },
+                        "calling": {
+                            "on": {
+                                "call_state": {
+                                    "call": "outbound",
+                                    "state": "connected",
+                                    "next_state": "connected",
+                                }
+                            }
+                        },
+                        "connected": {
+                            "on": {
+                                "scenario_trigger": {
+                                    "name": "hangup_call",
+                                    "actions": [{"action": "hangup", "call": "outbound"}],
+                                    "next_state": "disconnecting",
+                                }
+                            }
+                        },
+                        "disconnecting": {
+                            "on": {
+                                "call_state": {
+                                    "call": "outbound",
+                                    "state": "disconnected",
+                                    "next_state": "idle",
+                                }
+                            }
+                        },
+                    },
+                },
+                "callee": {
+                    "initial_state": "unregistered",
+                    "states": {
+                        "unregistered": {
+                            "entry": [{"action": "register"}],
+                            "on": {"registered": {"next_state": "idle"}},
+                        },
+                        "idle": {
+                            "on": {
+                                "call_received": {
+                                    "save_call_as": "inbound",
+                                    "reuse_alias": True,
+                                    "next_state": "ringing",
+                                }
+                            }
+                        },
+                        "ringing": {
+                            "entry": [{"action": "answer", "call": "inbound"}],
+                            "on": {
+                                "call_state": {
+                                    "call": "inbound",
+                                    "state": "connected",
+                                    "next_state": "connected",
+                                }
+                            },
+                        },
+                        "connected": {
+                            "on": {
+                                "call_state": {
+                                    "call": "inbound",
+                                    "state": "disconnected",
+                                    "next_state": "idle",
+                                }
+                            }
+                        },
+                    },
+                },
+            },
+            "endpoints": {
+                "alice": {"client": "alice", "behavior": "caller"},
+                "bob": {"client": "bob", "behavior": "callee"},
+            },
+            "steps": [
+                {"action": "wait_behavior_state", "endpoint": "alice", "state": "idle", "timeout": 2},
+                {"action": "wait_behavior_state", "endpoint": "bob", "state": "idle", "timeout": 2},
+                {"action": "trigger_behavior", "endpoint": "alice", "name": "place_call"},
+                {"action": "wait_behavior_state", "endpoint": "alice", "state": "connected", "timeout": 2},
+                {"action": "wait_behavior_state", "endpoint": "bob", "state": "connected", "timeout": 2},
+                {"action": "trigger_behavior", "endpoint": "alice", "name": "hangup_call"},
+                {"action": "wait_behavior_state", "endpoint": "alice", "state": "idle", "timeout": 2},
+                {"action": "wait_behavior_state", "endpoint": "bob", "state": "idle", "timeout": 2},
+                {"action": "trigger_behavior", "endpoint": "alice", "name": "place_call"},
+                {"action": "wait_behavior_state", "endpoint": "alice", "state": "connected", "timeout": 2},
+                {"action": "wait_behavior_state", "endpoint": "bob", "state": "connected", "timeout": 2},
+            ],
+        }
+    )
+
+    async def run() -> None:
+        """Run the alias-reuse behavior scenario inside a managed lab.
+
+        :returns: None.
+        """
+
+        async with lab:
+            await lab.run_scenario(scenario)
+
+    asyncio.run(run())
+
+    assert lab.calls["alice.outbound"].state == "connected"
+    assert lab.calls["bob.inbound"].state == "connected"
+    reused_aliases = {
+        event["call_alias"] for event in lab.artifacts.timeline if event["event"] == "behavior_call_alias_reused"
+    }
+    assert reused_aliases == {"alice.outbound", "bob.inbound"}
+
+
+def test_endpoint_behavior_rejects_active_call_alias_reuse(tmp_path: Path) -> None:
+    """Verify alias reuse cannot hide an active behavior-owned call.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
+    lab = _lab(tmp_path)
+    scenario = parse_scenario(
+        {
+            "name": "behavior-active-alias-reuse",
+            "behaviors": {
+                "caller": {
+                    "initial_state": "unregistered",
+                    "states": {
+                        "unregistered": {
+                            "entry": [{"action": "register"}],
+                            "on": {"registered": {"next_state": "idle"}},
+                        },
+                        "idle": {
+                            "entry": [
+                                {
+                                    "action": "call",
+                                    "target": "webex_user",
+                                    "save_as": "outbound",
+                                    "reuse_alias": True,
+                                }
+                            ],
+                            "on": {
+                                "call_state": {
+                                    "call": "outbound",
+                                    "state": "connected",
+                                    "next_state": "idle",
+                                }
+                            },
+                        },
+                        "done": {
+                            "on": {
+                                "timer_expired": {
+                                    "timer": "unused",
+                                }
+                            }
+                        },
+                    },
+                }
+            },
+            "endpoints": {"alice": {"client": "alice", "behavior": "caller"}},
+            "steps": [{"action": "wait_behavior_state", "endpoint": "alice", "state": "done", "timeout": 2}],
+        }
+    )
+
+    async def run() -> None:
+        """Run the active-alias-reuse scenario inside a managed lab.
+
+        :returns: None.
+        """
+
+        async with lab:
+            await lab.run_scenario(scenario)
+
+    with pytest.raises(ScenarioError, match="cannot reuse active call alias"):
+        asyncio.run(run())
+
+
+def test_endpoint_behavior_counter_terminates_call_loop(tmp_path: Path) -> None:
+    """Verify counters terminate a call loop without placing an extra call.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
+    messages: list[str] = []
+    lab = _lab(tmp_path, progress_reporter=messages.append)
+    scenario = parse_scenario(
+        {
+            "name": "behavior-counter-loop",
+            "behaviors": {
+                "caller": {
+                    "initial_state": "unregistered",
+                    "states": {
+                        "unregistered": {
+                            "entry": [{"action": "register"}],
+                            "on": {"registered": {"next_state": "idle"}},
+                        },
+                        "idle": {
+                            "entry": [{"action": "set_counter", "name": "calls_remaining", "value": 2}],
+                            "on": {"scenario_trigger": {"name": "place_call", "next_state": "loop"}},
+                        },
+                        "loop": {
+                            "entry": [
+                                {
+                                    "action": "call",
+                                    "target": "bob",
+                                    "use_target_extension": True,
+                                    "save_as": "outbound",
+                                    "reuse_alias": True,
+                                }
+                            ],
+                            "on": {
+                                "call_state": {
+                                    "call": "outbound",
+                                    "state": "connected",
+                                    "next_state": "connected",
+                                }
+                            },
+                        },
+                        "connected": {
+                            "on": {
+                                "scenario_trigger": {
+                                    "name": "hangup_call",
+                                    "actions": [{"action": "hangup", "call": "outbound"}],
+                                },
+                                "call_state": {
+                                    "call": "outbound",
+                                    "state": "disconnected",
+                                    "actions": [{"action": "decrement_counter", "name": "calls_remaining"}],
+                                    "next_state": "loop",
+                                },
+                                "counter_reached": {
+                                    "counter": "calls_remaining",
+                                    "value": 0,
+                                    "next_state": "done",
+                                },
+                            }
+                        },
+                        "done": {"entry": [{"action": "cancel_timer", "name": "unused"}]},
+                    },
+                },
+                "callee": {
+                    "initial_state": "unregistered",
+                    "states": {
+                        "unregistered": {
+                            "entry": [{"action": "register"}],
+                            "on": {"registered": {"next_state": "idle"}},
+                        },
+                        "idle": {
+                            "on": {
+                                "call_received": {
+                                    "save_call_as": "inbound",
+                                    "reuse_alias": True,
+                                    "next_state": "ringing",
+                                }
+                            }
+                        },
+                        "ringing": {
+                            "entry": [{"action": "answer", "call": "inbound"}],
+                            "on": {
+                                "call_state": {
+                                    "call": "inbound",
+                                    "state": "connected",
+                                    "next_state": "connected",
+                                }
+                            },
+                        },
+                        "connected": {
+                            "on": {
+                                "call_state": {
+                                    "call": "inbound",
+                                    "state": "disconnected",
+                                    "next_state": "idle",
+                                }
+                            }
+                        },
+                    },
+                },
+            },
+            "endpoints": {
+                "alice": {"client": "alice", "behavior": "caller"},
+                "bob": {"client": "bob", "behavior": "callee"},
+            },
+            "steps": [
+                {"action": "wait_behavior_state", "endpoint": "alice", "state": "idle", "timeout": 2},
+                {"action": "wait_behavior_state", "endpoint": "bob", "state": "idle", "timeout": 2},
+                {"action": "trigger_behavior", "endpoint": "alice", "name": "place_call"},
+                {"action": "wait_behavior_state", "endpoint": "alice", "state": "connected", "timeout": 2},
+                {"action": "wait_behavior_state", "endpoint": "bob", "state": "connected", "timeout": 2},
+                {"action": "trigger_behavior", "endpoint": "alice", "name": "hangup_call"},
+                {"action": "wait_behavior_state", "endpoint": "bob", "state": "idle", "timeout": 2},
+                {"action": "wait_behavior_state", "endpoint": "alice", "state": "connected", "timeout": 2},
+                {"action": "wait_behavior_state", "endpoint": "bob", "state": "connected", "timeout": 2},
+                {"action": "trigger_behavior", "endpoint": "alice", "name": "hangup_call"},
+                {"action": "wait_behavior_state", "endpoint": "alice", "state": "done", "timeout": 2},
+                {"action": "wait_behavior_state", "endpoint": "bob", "state": "idle", "timeout": 2},
+            ],
+        }
+    )
+
+    async def run() -> None:
+        """Run the counter loop scenario inside a managed lab.
+
+        :returns: None.
+        """
+
+        async with lab:
+            await lab.run_scenario(scenario)
+
+    asyncio.run(run())
+
+    assert sum(1 for event in lab.artifacts.timeline if event["event"] == "call_placed") == 2
+    assert lab.calls["alice.outbound"].state == "disconnected"
+    counter_values = [
+        event["value"]
+        for event in lab.artifacts.timeline
+        if event["event"] == "behavior_counter_updated" and event["counter"] == "calls_remaining"
+    ]
+    assert counter_values == [2, 1, 0]
+    assert any(
+        event["event"] == "behavior_event"
+        and event["trigger"] == "counter_reached"
+        and event["counter"] == "calls_remaining"
+        and event["counter_value"] == 0
+        for event in lab.artifacts.timeline
+    )
+    assert (
+        "behavior alice/caller state=connected event=counter_reached:calls_remaining=0 next_state=done action=-"
+    ) in messages
+
+
+def test_endpoint_behavior_unknown_counter_fails_with_context(tmp_path: Path) -> None:
+    """Verify counter mutations require an existing counter unless setting it.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
+    lab = _lab(tmp_path)
+    scenario = parse_scenario(
+        {
+            "name": "behavior-unknown-counter",
+            "behaviors": {
+                "caller": {
+                    "initial_state": "unregistered",
+                    "states": {
+                        "unregistered": {
+                            "entry": [{"action": "register"}],
+                            "on": {"registered": {"next_state": "idle"}},
+                        },
+                        "idle": {
+                            "on": {
+                                "scenario_trigger": {
+                                    "name": "decrement",
+                                    "actions": [{"action": "decrement_counter", "name": "missing"}],
+                                }
+                            }
+                        },
+                        "done": {"entry": [{"action": "cancel_timer", "name": "unused"}]},
+                    },
+                }
+            },
+            "endpoints": {"alice": {"client": "alice", "behavior": "caller"}},
+            "steps": [
+                {"action": "wait_behavior_state", "endpoint": "alice", "state": "idle", "timeout": 2},
+                {"action": "trigger_behavior", "endpoint": "alice", "name": "decrement"},
+                {"action": "wait_behavior_state", "endpoint": "alice", "state": "done", "timeout": 2},
+            ],
+        }
+    )
+
+    async def run() -> None:
+        """Run the unknown-counter scenario inside a managed lab.
+
+        :returns: None.
+        """
+
+        async with lab:
+            await lab.run_scenario(scenario)
+
+    with pytest.raises(ScenarioError, match="endpoint 'alice' action 1 \\(decrement_counter\\).*missing"):
+        asyncio.run(run())
+
+
+def test_endpoint_behavior_rejects_unknown_scripted_trigger(tmp_path: Path) -> None:
+    """Verify scripted triggers must target a trigger defined by the behavior.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
+    lab = _lab(tmp_path)
+    scenario = parse_scenario(
+        {
+            "name": "behavior-unknown-trigger",
+            "behaviors": {
+                "idle": {
+                    "initial_state": "idle",
+                    "states": {
+                        "idle": {
+                            "on": {
+                                "scenario_trigger": {
+                                    "name": "known",
+                                }
+                            }
+                        }
+                    },
+                }
+            },
+            "endpoints": {"alice": {"client": "alice", "behavior": "idle"}},
+            "steps": [{"action": "trigger_behavior", "endpoint": "alice", "name": "missing"}],
+        }
+    )
+
+    async def run() -> None:
+        """Run the unknown-trigger scenario inside a managed lab.
+
+        :returns: None.
+        """
+
+        async with lab:
+            await lab.run_scenario(scenario)
+
+    with pytest.raises(ScenarioError, match="unknown trigger"):
+        asyncio.run(run())
+
+
+def test_endpoint_behavior_rejects_explicit_incoming_conflict(tmp_path: Path) -> None:
+    """Verify behavior and explicit incoming waits cannot consume the same client.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
+    lab = _lab(tmp_path)
+    scenario = parse_scenario(
+        {
+            "name": "behavior-conflict",
+            "behaviors": {
+                "auto_answer": {
+                    "initial_state": "idle",
+                    "states": {
+                        "idle": {
+                            "on": {
+                                "call_received": {
+                                    "save_call_as": "inbound",
+                                    "actions": [{"action": "answer", "call": "inbound"}],
+                                }
+                            }
+                        }
+                    },
+                }
+            },
+            "endpoints": {"bob": {"client": "bob", "behavior": "auto_answer"}},
+            "steps": [
+                {"action": "register", "clients": ["alice", "bob"]},
+                {"action": "call", "client": "alice", "target": "bob", "save_as": "alice_to_bob"},
+                {"action": "expect_incoming", "client": "bob", "save_as": "bob_incoming"},
+            ],
+        }
+    )
+
+    async def run() -> None:
+        """Run the conflicting incoming-consumer scenario inside a managed lab.
+
+        :returns: None.
+        """
+
+        async with lab:
+            await lab.run_scenario(scenario)
+
+    import asyncio
+
+    with pytest.raises(ScenarioError, match="expect_incoming"):
+        asyncio.run(run())
+
+
+def test_endpoint_behavior_rejects_unknown_client(tmp_path: Path) -> None:
+    """Verify endpoint behavior assignments must name configured clients.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
+    lab = _lab(tmp_path)
+    scenario = parse_scenario(
+        {
+            "name": "behavior-unknown-client",
+            "behaviors": {
+                "idle": {
+                    "initial_state": "idle",
+                    "states": {
+                        "idle": {
+                            "on": {
+                                "media_active": {},
+                            }
+                        }
+                    },
+                }
+            },
+            "endpoints": {"ghost": {"client": "ghost", "behavior": "idle"}},
+            "steps": [{"action": "register", "client": "alice"}],
+        }
+    )
+
+    async def run() -> None:
+        """Run the unknown-client behavior scenario inside a managed lab.
+
+        :returns: None.
+        """
+
+        async with lab:
+            await lab.run_scenario(scenario)
+
+    import asyncio
+
+    with pytest.raises(ScenarioError, match="unknown client"):
+        asyncio.run(run())
 
 
 def test_progress_reporter_receives_step_and_call_lifecycle_messages(tmp_path: Path) -> None:

@@ -30,6 +30,12 @@
     make PYTHON_EXE=<project directory where we need the PJSIPUA2 package>/.venv/bin/python
     <project directory where we need the PJSIPUA2 package>.venv/bin/python setup.py install
 
+   For example:
+
+      cd ~/Documents/workspace/pjproject/pjsip-apps/src/swig/python
+      make PYTHON_EXE=~/Documents/workspace/sip_client/.venv/bin/python
+      ~/Documents/workspace/sip_client/.venv/bin/python setup.py install
+
 5. Verify the installation
 
     In the project directory:

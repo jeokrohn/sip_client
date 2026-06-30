@@ -125,6 +125,57 @@ steps:
           call: bob_incoming
 ```
 
+Use endpoint `behaviors` when one side of a scenario should react to events independently of the explicit step flow.
+The step DSL remains available and is still the best fit for straightforward scripted scenarios:
+
+```yaml
+behaviors:
+  auto_answer:
+    initial_state: idle
+    states:
+      idle:
+        on:
+          call_received:
+            save_call_as: inbound
+            actions:
+              - action: answer
+                call: inbound
+            next_state: connected
+
+      connected:
+        on:
+          call_state:
+            state: disconnected
+            next_state: idle
+
+endpoints:
+  bob:
+    client: bob
+    behavior: auto_answer
+
+steps:
+  - action: register
+    clients: [alice, bob]
+  - action: call
+    client: alice
+    target: bob
+    save_as: alice_to_bob
+  - action: wait_state
+    call: alice_to_bob
+    state: connected
+  - action: wait_media
+    call: bob.inbound
+```
+
+Behavior call aliases are scoped by endpoint. In the example above, Bob's behavior can refer to `inbound`, while
+scripted steps refer to the same call as `bob.inbound`. Behaviors support entry actions, `registered`,
+`scenario_trigger`, `call_received`, `call_state`, `media_active`, and `timer_expired` events. Behavior actions can
+reuse most scenario actions, plus behavior-local `start_timer` and `cancel_timer` actions. Use `wait_behavior_state`
+plus `trigger_behavior` when scripted steps need to wait for several endpoint personas to become ready before one of
+them starts reactive work.
+
+See [docs/scenario-yaml.md](docs/scenario-yaml.md) for the complete scenario YAML reference.
+
 For media-marker checks, prefer `record_during_playback` over a separate `play_tts` followed by `record`.
 The action starts recording first, waits for a short pre-roll, plays the media, waits for post-roll, and verifies
 the marker when `marker` is set:

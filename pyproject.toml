@@ -40,3 +40,14 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+
+[tool.mypy]
+strict = true
+ignore_missing_imports = false
+no_implicit_optional = false
+warn_unused_configs = true
+
+[dependency-groups]
+dev = [
+    "mypy>=2.1.0",
+]

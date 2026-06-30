@@ -13,8 +13,9 @@ from wxcalls.artifacts import ArtifactWriter
 from wxcalls.backends.base import CallHandle, RegistrationResult, SipBackend
 from wxcalls.backends.fake import FakeSipBackend
 from wxcalls.backends.pjsua2 import Pjsua2SipBackend
-from wxcalls.config import ConfigError, LabConfig, load_config
-from wxcalls.exceptions import BackendError, ScenarioError
+from wxcalls.behavior import BehaviorRuntime
+from wxcalls.config import LabConfig, load_config
+from wxcalls.exceptions import BackendError, ConfigError, ScenarioError
 from wxcalls.exceptions import TimeoutError as WxTimeoutError
 from wxcalls.media import MediaAsset, MediaFactory, detect_marker
 from wxcalls.scenario import Scenario, ScenarioStep, load_scenario
@@ -53,6 +54,7 @@ class CallLab:
         self.calls: dict[str, CallHandle] = {}
         self.registrations: dict[str, RegistrationResult] = {}
         self.recordings: dict[str, Path] = {}
+        self._behavior_runtime: BehaviorRuntime | None = None
         self._reported_established_call_ids: set[str] = set()
         self._reported_ended_call_ids: set[str] = set()
 
@@ -177,6 +179,24 @@ class CallLab:
         :returns: None.
         """
 
+        if scenario.endpoints:
+            runtime = BehaviorRuntime(self, scenario)
+            previous_runtime = self._behavior_runtime
+            self._behavior_runtime = runtime
+            try:
+                await runtime.run_scenario(lambda: self._run_scenario_steps(scenario))
+            finally:
+                self._behavior_runtime = previous_runtime
+            return
+        await self._run_scenario_steps(scenario)
+
+    async def _run_scenario_steps(self, scenario: Scenario) -> None:
+        """Run the explicit step sequence for a parsed scenario.
+
+        :param scenario: Scenario to execute.
+        :returns: None.
+        """
+
         self.artifacts.record_event("scenario_started", name=scenario.name, source=str(scenario.source or ""))
         step_count = len(scenario.steps)
         for step in scenario.steps:
@@ -186,6 +206,16 @@ class CallLab:
             self.artifacts.record_event("step_finished", index=step.index, action=step.action)
         self.artifacts.record_event("scenario_finished", name=scenario.name)
 
+    async def run_behavior_action(self, action: str, params: dict[str, Any]) -> None:
+        """Run an action on behalf of an endpoint behavior.
+
+        :param action: Reused scenario action name.
+        :param params: Already scoped action parameters.
+        :returns: None.
+        """
+
+        await self._run_action(action, params)
+
     async def _run_step(self, step: ScenarioStep) -> None:
         """Dispatch one scenario step to its action handler.
 
@@ -194,10 +224,21 @@ class CallLab:
         :raises ScenarioError: If no handler exists for the action.
         """
 
-        handler = getattr(self, f"_step_{step.action}", None)
+        await self._run_action(step.action, step.params)
+
+    async def _run_action(self, action: str, params: dict[str, Any]) -> None:
+        """Dispatch an action to its handler.
+
+        :param action: Scenario or behavior action name.
+        :param params: Action parameters.
+        :returns: None.
+        :raises ScenarioError: If no handler exists for the action.
+        """
+
+        handler = getattr(self, f"_step_{action}", None)
         if handler is None:
-            raise ScenarioError(f"Unsupported action: {step.action}")
-        await handler(step.params)
+            raise ScenarioError(f"Unsupported action: {action}")
+        await handler(params)
 
     async def _step_parallel(self, params: dict[str, Any]) -> None:
         """Run named scenario branches concurrently.
@@ -452,6 +493,40 @@ class CallLab:
                 raise WxTimeoutError(f"Timed out waiting for audio media on call {call.id}")
             await asyncio.sleep(0.01)
         self.artifacts.record_event("call_media_seen", call=call.id, media="audio")
+
+    async def _step_wait_behavior_state(self, params: dict[str, Any]) -> None:
+        """Run a ``wait_behavior_state`` scenario step.
+
+        :param params: Step parameters.
+        :returns: None.
+        :raises ScenarioError: If no behavior runtime is active.
+        """
+
+        if self._behavior_runtime is None:
+            raise ScenarioError("wait_behavior_state requires endpoint behaviors")
+        endpoint = str(params["endpoint"])
+        state = str(params["state"])
+        await self._behavior_runtime.wait_endpoint_state(
+            endpoint=endpoint,
+            state=state,
+            timeout=float(params.get("timeout", 30.0)),
+        )
+        self.artifacts.record_event("behavior_state_seen", endpoint=endpoint, state=state)
+
+    async def _step_trigger_behavior(self, params: dict[str, Any]) -> None:
+        """Run a ``trigger_behavior`` scenario step.
+
+        :param params: Step parameters.
+        :returns: None.
+        :raises ScenarioError: If no behavior runtime is active.
+        """
+
+        if self._behavior_runtime is None:
+            raise ScenarioError("trigger_behavior requires endpoint behaviors")
+        endpoint = str(params["endpoint"])
+        name = str(params["name"])
+        await self._behavior_runtime.emit_trigger(endpoint=endpoint, name=name)
+        self.artifacts.record_event("behavior_trigger_emitted", endpoint=endpoint, name=name)
 
     async def _step_play_tts(self, params: dict[str, Any]) -> None:
         """Run a ``play_tts`` scenario step.

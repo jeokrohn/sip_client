@@ -1,0 +1,145 @@
+name: behavior-owned-outbound-call
+
+behaviors:
+  caller:
+    initial_state: unregistered
+    states:
+      unregistered:
+        entry:
+          - action: register
+        on:
+          registered:
+            next_state: idle
+
+      idle:
+        entry:
+          - action: set_counter
+            name: calls_remaining
+            value: 10
+        on:
+          scenario_trigger:
+            name: start_call
+            next_state: loop
+
+      loop:
+        entry:
+          - action: call
+            target: Heidi
+            use_target_extension: true
+            save_as: outbound
+            reuse_alias: true
+        on:
+          call_state:
+            call: outbound
+            state: connected
+            next_state: connected
+
+      connected:
+        entry:
+          - action: start_timer
+            name: hangup_delay
+            seconds: 10
+          - action: play_tts
+            call: outbound
+            text: This is an automated test call
+        on:
+          timer_expired:
+            timer: hangup_delay
+            actions:
+              - action: hangup
+                call: outbound
+
+          call_state:
+            call: outbound
+            state: disconnected
+            actions:
+              - action: decrement_counter
+                name: calls_remaining
+            next_state: loop
+
+          counter_reached:
+            counter: calls_remaining
+            value: 0
+            next_state: done
+
+      done:
+        entry:
+          - action: cancel_timer
+            name: hangup_delay
+
+  callee:
+    initial_state: unregistered
+    states:
+      unregistered:
+        entry:
+          - action: register
+        on:
+          registered:
+            next_state: idle
+
+      idle:
+        on:
+          call_received:
+            save_call_as: inbound
+            reuse_alias: true
+            next_state: ringing
+
+      ringing:
+        entry:
+          - action: answer
+            call: inbound
+        on:
+          call_state:
+            call: inbound
+            state: connected
+            next_state: connected
+
+      connected:
+        on:
+          call_state:
+            call: inbound
+            state: disconnected
+            next_state: idle
+
+endpoints:
+  Leslie:
+    client: Leslie
+    behavior: caller
+  Heidi:
+    client: Heidi
+    behavior: callee
+
+steps:
+  - action: wait_behavior_state
+    endpoint: Leslie
+    state: idle
+    timeout: 30
+
+  - action: wait_behavior_state
+    endpoint: Heidi
+    state: idle
+    timeout: 30
+
+  - action: trigger_behavior
+    endpoint: Leslie
+    name: start_call
+
+  - action: wait_behavior_state
+    endpoint: Leslie
+    state: connected
+    timeout: 30
+
+  - action: wait_behavior_state
+    endpoint: Heidi
+    state: connected
+    timeout: 30
+
+  - action: wait_behavior_state
+    endpoint: Leslie
+    state: done
+    timeout: 600
+
+  - action: wait_behavior_state
+    endpoint: Heidi
+    state: idle
+    timeout: 30
