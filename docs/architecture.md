@@ -53,7 +53,7 @@ The architecture is centered on `CallLab`. Entry points depend on it, and it dep
 | `wxcalls.__main__` | Supports `python -m wxcalls` by delegating to the CLI entry point. | `cli` | None. |
 | `wxcalls.cli` | Provides the `wxcalls` command with `preflight` and `run` subcommands. It parses CLI options, runs preflight diagnostics, and executes scenario files inside an initialized lab. | `orchestrator`, `preflight` | Python `argparse`, `asyncio`. |
 | `wxcalls.pytest_plugin` | Registers pytest options, collects selected YAML scenario files as pytest items, and exposes fixtures for configured labs, clients, targets, and scenario execution. | `orchestrator` | `pytest`, Python `glob`, `asyncio`. |
-| `wxcalls.config` | Loads framework YAML and dotenv-style secrets into immutable dataclasses. It validates client/target shape, resolves credential environment variables, and resolves scenario target names to SIP URIs. | `exceptions` | `PyYAML`, process environment. |
+| `wxcalls.config` | Loads framework YAML and dotenv-style secrets into immutable dataclasses. It uses Pydantic for raw YAML validation, resolves credential environment variables, and resolves scenario target names to SIP URIs. | `exceptions` | `PyYAML`, `Pydantic`, process environment. |
 | `wxcalls.scenario` | Defines the YAML scenario schema, validates step actions, endpoint behaviors, and required fields, and returns typed scenario data. | `exceptions` | `PyYAML`. |
 | `wxcalls.behavior` | Runs optional endpoint behavior policies beside explicit scenario steps. It watches incoming calls, call state, media activation, and timers, then dispatches scoped behavior actions back through `CallLab`. | `backends.base`, `config`, `exceptions`, `scenario` | Python `asyncio`. |
 | `wxcalls.orchestrator` | Coordinates scenario execution. `CallLab` owns the loaded config, backend, artifact writer, media factory, call handles, recordings, and optional behavior runtime. Each scenario action maps to a `_step_*` handler. | `artifacts`, `behavior`, `backends.base`, `backends.fake`, `backends.pjsua2`, `config`, `exceptions`, `media`, `scenario` | Python `asyncio` via async context management. |
@@ -71,9 +71,10 @@ The architecture is centered on `CallLab`. Entry points depend on it, and it dep
 | Path | Purpose | Dependencies |
 | --- | --- | --- |
 | `config.example.yml` | Example lab configuration showing artifacts, DNS nameservers, SIP clients, credential environment variable names, transports, video flags, and opaque targets. | Consumed by `wxcalls.config`. |
-| `scenarios/*.yml` | Example scenario documents that exercise registration, basic audio markers, video smoke probes, and register-only flows. | Consumed by `wxcalls.scenario` and `CallLab`. |
+| `scenarios/*.yml` | Example scenario documents that exercise registration, basic audio markers, video smoke probes, parallel calls, and endpoint behavior flows. | Consumed by `wxcalls.scenario` and `CallLab`. |
+| `docs/scenario-yaml.md` | Complete scenario YAML reference for explicit steps and endpoint behavior definitions. | Documents `wxcalls.scenario` inputs and `CallLab` actions. |
 | `tests/` | Unit and integration-style tests for config parsing, scenario validation, artifact writing, media helpers, preflight checks, and fake-backend orchestration. | Uses `pytest` and the fake backend. |
-| `pyproject.toml` | Defines package metadata, console script, pytest plugin entry point, runtime dependency on `PyYAML`, and dev extras for `pytest` and `ruff`. | Used by `uv`, build tooling, pytest, and ruff. |
+| `pyproject.toml` | Defines package metadata, GPL license metadata, console script, pytest plugin entry point, runtime dependencies on `PyYAML` and `Pydantic`, and dev tooling dependencies for `pytest`, `ruff`, and `mypy`. | Used by `uv`, build tooling, pytest, ruff, and mypy. |
 
 ## Main Execution Flows
 
