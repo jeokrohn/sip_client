@@ -1,34 +1,53 @@
-name: behavior-owned-outbound-call
+name: call-behaviors
 
+# Behavior scenarios attach small state machines to endpoints. The scripted
+# steps at the bottom only wait for readiness, trigger the caller, and assert
+# final states; the behaviors own the actual call setup and teardown.
 behaviors:
+  # Leslie's behavior places repeated outbound calls until the counter reaches 0.
   caller:
+    # The runtime enters this state as soon as behaviors start.
     initial_state: unregistered
     states:
       unregistered:
+        # Entry actions run every time a state is entered. With no explicit
+        # client, register uses the endpoint's client from the endpoints block.
         entry:
           - action: register
         on:
+          # The behavior runtime emits registered after the entry registration succeeds.
           registered:
             next_state: idle
 
       idle:
         entry:
+          # Counters are scoped to this endpoint behavior instance. Reset on
+          # idle entry so each scenario trigger starts a fresh 10-call run.
           - action: set_counter
             name: calls_remaining
             value: 10
         on:
+          # Scripted steps emit this named event with trigger_behavior.
           scenario_trigger:
             name: start_call
             next_state: loop
 
       loop:
         entry:
+          # call defaults to Leslie because the behavior is bound to that endpoint.
           - action: call
             target: Heidi
+            # Resolve Heidi through the configured endpoint extension instead
+            # of requiring a literal dial string in this scenario.
             use_target_extension: true
+            # Behavior call aliases are endpoint-scoped. Scripted steps would
+            # refer to this call as Leslie.outbound.
             save_as: outbound
+            # The loop recreates outbound after each disconnect; alias reuse is
+            # allowed only after the previous call under that alias is inactive.
             reuse_alias: true
         on:
+          # Move to connected when the behavior-owned call reaches connected.
           call_state:
             call: outbound
             state: connected
@@ -36,19 +55,23 @@ behaviors:
 
       connected:
         entry:
+          # Start or restart a behavior-local timer whenever connected is entered.
           - action: start_timer
             name: hangup_delay
             seconds: 10
-          - action: play_tts
-            call: outbound
-            text: This is an automated test call
+          # Uncomment this optional media action to exercise audio on each connected call.
+          # - action: play_tts
+          #   call: outbound
+          #   text: This is an automated test call
         on:
+          # Timer expiry runs actions without leaving the state unless next_state is set.
           timer_expired:
             timer: hangup_delay
             actions:
               - action: hangup
                 call: outbound
 
+          # Once hangup completes, decrement the endpoint-local loop counter.
           call_state:
             call: outbound
             state: disconnected
@@ -57,6 +80,9 @@ behaviors:
                 name: calls_remaining
             next_state: loop
 
+          # Counter updates synchronously check counter_reached rules in the
+          # current state before applying the triggering rule's next_state, so
+          # the loop stops at exactly 0 instead of placing an extra call.
           counter_reached:
             counter: calls_remaining
             value: 0
@@ -64,9 +90,12 @@ behaviors:
 
       done:
         entry:
+          # Defensive cleanup in case a timer remains active when the loop ends.
           - action: cancel_timer
             name: hangup_delay
 
+  # Heidi's behavior registers, auto-answers inbound calls, and returns to idle
+  # after Leslie disconnects.
   callee:
     initial_state: unregistered
     states:
@@ -79,13 +108,17 @@ behaviors:
 
       idle:
         on:
+          # Incoming call events must save the received call under a behavior-local alias.
           call_received:
             save_call_as: inbound
+            # Allow the next inbound call to reuse inbound after the previous
+            # one has disconnected.
             reuse_alias: true
             next_state: ringing
 
       ringing:
         entry:
+          # answer defaults to Heidi's endpoint context and uses the local alias.
           - action: answer
             call: inbound
         on:
@@ -101,6 +134,8 @@ behaviors:
             state: disconnected
             next_state: idle
 
+# Bind behavior definitions to configured clients. The mapping key is the
+# endpoint name used by behavior-aware steps and behavior call aliases.
 endpoints:
   Leslie:
     client: Leslie
@@ -109,6 +144,8 @@ endpoints:
     client: Heidi
     behavior: callee
 
+# Scripted steps act as a readiness barrier and high-level assertions while the
+# behavior state machines own the reactive call flow.
 steps:
   - action: wait_behavior_state
     endpoint: Leslie
@@ -122,6 +159,7 @@ steps:
 
   - action: trigger_behavior
     endpoint: Leslie
+    # Must match the caller idle state's scenario_trigger name.
     name: start_call
 
   - action: wait_behavior_state
@@ -136,6 +174,7 @@ steps:
 
   - action: wait_behavior_state
     endpoint: Leslie
+    # The caller reaches done after ten hangup/decrement cycles.
     state: done
     timeout: 600
 
