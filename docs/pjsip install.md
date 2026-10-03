@@ -22,6 +22,8 @@ redistributing builds that include or require these bindings.
         ./configure CFLAGS="-fPIC" --with-ssl="$(brew --prefix openssl@3)"
         make dep
         make
+   To resolve (version) issues with `ffmpeg` configure with `--disable-ffmpeg`
+
 
 4. Build/install the Python SWIG module into the same Python env used by this project:
 
@@ -39,9 +41,11 @@ redistributing builds that include or require these bindings.
           make PYTHON_EXE=~/Documents/workspace/sip_client/.venv/bin/python
           ~/Documents/workspace/sip_client/.venv/bin/python setup.py install
 
+   Add `--force` to the `setup.py install` command if you need to overwrite an existing installation.
+
 Alternative: install with uv
 
-      cd pjproject/pjsip-apps/src/swig/python   
+      cd ~/Documents/workspace/pjproject/pjsip-apps/src/swig/python   
       make PYTHON_EXE=/Users/jkrohn/Library/CloudStorage/Dropbox/ln/workspace/sip_client/.venv/bin/python
 
       cd /Users/jkrohn/Library/CloudStorage/Dropbox/ln/workspace/sip_client
