@@ -36,8 +36,8 @@ behaviors:
         entry:
           # call defaults to Leslie because the behavior is bound to that endpoint.
           - action: call
-            target: Heidi
-            # Resolve Heidi through the configured endpoint extension instead
+            target: Austin
+            # Resolve Austin through the configured endpoint extension instead
             # of requiring a literal dial string in this scenario.
             use_target_extension: true
             # Behavior call aliases are endpoint-scoped. Scripted steps would
@@ -112,7 +112,7 @@ behaviors:
           - action: cancel_timer
             name: loop_delay
 
-  # Heidi's behavior registers, auto-answers inbound calls, and returns to idle
+  # Austin's behavior registers, auto-answers inbound calls, and returns to idle
   # after Leslie disconnects.
   callee:
     initial_state: unregistered
@@ -135,7 +135,7 @@ behaviors:
             next_state: ringing
 
       ringing:
-        # answer call after a 2-second delay to simulate a human answering the phone.
+        # answer call after a 4-second delay to simulate a human answering the phone.
         entry:
           # start a timer
           - action: start_timer
@@ -153,6 +153,7 @@ behaviors:
             next_state: connected
 
       connected:
+        # wait for far end to hang up, then return to idle
         on:
           call_state:
             call: inbound
@@ -165,8 +166,8 @@ endpoints:
   Leslie:
     client: Leslie
     behavior: caller
-  Heidi:
-    client: Heidi
+  Austin:
+    client: Austin
     behavior: callee
 
 # Scripted steps act as a readiness barrier and high-level assertions while the
@@ -178,7 +179,7 @@ steps:
     timeout: 30
 
   - action: wait_behavior_state
-    endpoint: Heidi
+    endpoint: Austin
     state: idle
     timeout: 30
 
@@ -193,7 +194,7 @@ steps:
     timeout: 30
 
   - action: wait_behavior_state
-    endpoint: Heidi
+    endpoint: Austin
     state: connected
     timeout: 30
 
@@ -201,9 +202,9 @@ steps:
     endpoint: Leslie
     # The caller reaches done after ten hangup/decrement cycles.
     state: done
-    timeout: 600
+    timeout: 9000
 
   - action: wait_behavior_state
-    endpoint: Heidi
+    endpoint: Austin
     state: idle
     timeout: 30
