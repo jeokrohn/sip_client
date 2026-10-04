@@ -1065,12 +1065,13 @@ def _set_video_count(config_or_param: Any, count: int) -> None:
 
 
 def _configure_srtp(account_config: Any, pj: Any) -> None:
-    """Require SRTP negotiation for Webex Calling account media.
+    """Require SRTP and an available local RTP port for Webex Calling media.
 
     :param account_config: PJSUA2 account configuration object.
     :param pj: Imported ``pjsua2`` module.
     :returns: None.
     :raises BackendError: If the PJSUA2 binding does not expose SRTP controls.
+    :side effect: Uses an OS-selected RTP port to avoid fixed-port collisions between accounts or processes.
     """
 
     media_config = getattr(account_config, "mediaConfig", None)
@@ -1095,6 +1096,11 @@ def _configure_srtp(account_config: Any, pj: Any) -> None:
     media_config.srtpUse = srtp_mandatory
     if hasattr(media_config, "srtpSecureSignaling"):
         media_config.srtpSecureSignaling = 0
+    media_transport = getattr(media_config, "transportConfig", None)
+    if media_transport is not None and hasattr(media_transport, "port"):
+        # A fixed default (4000) collides when another account or SIP process
+        # already owns it; port zero asks PJSIP to bind an available UDP port.
+        media_transport.port = 0
     _clear_vector(srtp_opt.cryptos)
     crypto = crypto_cls()
     crypto.name = "AES_CM_128_HMAC_SHA1_80"

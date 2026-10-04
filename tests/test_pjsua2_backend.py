@@ -88,6 +88,19 @@ class FakeMediaConfig:
         self.srtpUse = 0
         self.srtpSecureSignaling = 0
         self.srtpOpt = FakeSrtpOpt()
+        self.transportConfig = FakeMediaTransportConfig()
+
+
+class FakeMediaTransportConfig:
+    """Represent the RTP transport settings exposed by PJSUA2."""
+
+    def __init__(self) -> None:
+        """Create fake RTP transport settings.
+
+        :returns: None.
+        """
+
+        self.port = 4000
 
 
 class FakeSrtpOpt:
@@ -308,6 +321,7 @@ def test_configure_srtp_requires_secure_media() -> None:
 
     assert account_config.mediaConfig.srtpUse == FakePj.PJMEDIA_SRTP_MANDATORY
     assert account_config.mediaConfig.srtpSecureSignaling == 0
+    assert account_config.mediaConfig.transportConfig.port == 0
     assert [crypto.name for crypto in account_config.mediaConfig.srtpOpt.cryptos] == ["AES_CM_128_HMAC_SHA1_80"]
     assert account_config.mediaConfig.srtpOpt.keyings == [FakePj.PJMEDIA_SRTP_KEYING_SDES]
 
