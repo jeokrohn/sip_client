@@ -57,6 +57,12 @@ Use `--wxcalls-backend fake` for local parser/orchestrator smoke runs without We
 Scenario runs print concise progress lines for call lifecycle events, including when calls are initiated, received,
 established, and ended.
 
+Run YAML scenario through the CLI:
+
+```bash
+wxcalls run -c config.local.yml scenarios/call-behaviors.yml
+```
+
 ## Call scenarios
 
 Use `wait_state` to assert call signaling state and `wait_media` to assert that audio media is active before playback:
