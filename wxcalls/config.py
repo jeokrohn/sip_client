@@ -29,7 +29,7 @@ class SipCredentials:
 
 @dataclass(frozen=True)
 class SipClientConfig:
-    """Configuration for one pre-provisioned generic SIP phone identity.
+    """Configuration for one SIP phone identity or synthetic local gateway.
 
     :param name: Stable logical name used by scenarios.
     :param id_uri: SIP identity URI used in the account ``From`` header.
@@ -41,6 +41,11 @@ class SipClientConfig:
     :param transport: Preferred transport label, typically ``tls``, ``tcp``, or ``udp``.
     :param enable_video: Whether video may be offered for video smoke tests.
     :param local_port: Optional local SIP signaling port override.
+    :param kind: SIP endpoint type, either ``sip`` or ``local_gateway``.
+    :param registrar_domain: Webex Calling registrar domain for an LGW.
+    :param trunk_group: Trunk OTG/DTG value appended to the LGW identity.
+    :param line_port: Line/Port value used as the LGW registration identity.
+    :param outbound_proxy: Control Hub outbound proxy address for an LGW.
     """
 
     name: str
@@ -53,6 +58,20 @@ class SipClientConfig:
     transport: str = "tls"
     enable_video: bool = False
     local_port: int | None = None
+    kind: str = "sip"
+    registrar_domain: str | None = None
+    trunk_group: str | None = None
+    line_port: str | None = None
+    outbound_proxy: str | None = None
+
+    @property
+    def is_local_gateway(self) -> bool:
+        """Return whether this client uses registration-based LGW settings.
+
+        :returns: ``True`` for the ``local_gateway`` client kind.
+        """
+
+        return self.kind == "local_gateway"
 
     def credentials(self, env: dict[str, str] | None = None) -> SipCredentials:
         """Resolve configured credential environment variables.
@@ -194,11 +213,11 @@ class LabConfig:
 
 
 class _RawSipClientConfig(BaseModel):
-    """Pydantic model for one SIP client entry loaded from YAML.
+    """Pydantic model for a SIP or Local Gateway entry loaded from YAML.
 
     :param name: Stable logical name used by scenarios.
-    :param id_uri: SIP identity URI used in the account ``From`` header.
-    :param registrar_uri: SIP registrar URI.
+    :param id_uri: SIP identity URI for generic SIP clients.
+    :param registrar_uri: SIP registrar URI for generic SIP clients.
     :param username_env: Environment variable containing the SIP username.
     :param password_env: Environment variable containing the SIP password.
     :param extension: Optional numeric extension owned by this client.
@@ -206,11 +225,16 @@ class _RawSipClientConfig(BaseModel):
     :param transport: Preferred transport label.
     :param enable_video: Whether video may be offered for video smoke tests.
     :param local_port: Optional local SIP signaling port override.
+    :param kind: Endpoint type, either ``sip`` or ``local_gateway``.
+    :param registrar_domain: Control Hub Registrar Domain for an LGW.
+    :param trunk_group: Control Hub Trunk Group OTG/DTG value.
+    :param line_port: Control Hub Line/Port value.
+    :param outbound_proxy: Control Hub outbound proxy address.
     """
 
     name: str
-    id_uri: str
-    registrar_uri: str
+    id_uri: str | None = None
+    registrar_uri: str | None = None
     username_env: str
     password_env: str
     extension: str | int | None = None
@@ -218,8 +242,13 @@ class _RawSipClientConfig(BaseModel):
     transport: str = "tls"
     enable_video: bool = False
     local_port: int | None = None
+    kind: str = "sip"
+    registrar_domain: str | None = None
+    trunk_group: str | None = None
+    line_port: str | None = None
+    outbound_proxy: str | None = None
 
-    @field_validator("name", "id_uri", "registrar_uri", "username_env", "password_env")
+    @field_validator("name", "username_env", "password_env")
     @classmethod
     def _non_empty_string(cls, value: str) -> str:
         """Validate and normalize a required client string.
@@ -240,6 +269,49 @@ class _RawSipClientConfig(BaseModel):
 
         :param value: Candidate proxy URI.
         :returns: Stripped proxy URI, or ``None`` when empty.
+        """
+
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+    @field_validator("id_uri", "registrar_uri")
+    @classmethod
+    def _optional_uri(cls, value: str | None) -> str | None:
+        """Normalize optional generic SIP account URIs.
+
+        :param value: Candidate SIP URI.
+        :returns: Stripped URI, or ``None`` when absent.
+        """
+
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+    @field_validator("kind")
+    @classmethod
+    def _supported_client_kind(cls, value: str) -> str:
+        """Normalize and validate the configured endpoint type.
+
+        :param value: Candidate endpoint type.
+        :returns: Normalized supported endpoint type.
+        :raises ValueError: If the endpoint type is unsupported.
+        """
+
+        kind = value.strip().lower()
+        if kind not in {"sip", "local_gateway"}:
+            raise ValueError("kind must be 'sip' or 'local_gateway'")
+        return kind
+
+    @field_validator("registrar_domain", "trunk_group", "line_port", "outbound_proxy")
+    @classmethod
+    def _optional_lgw_string(cls, value: str | None) -> str | None:
+        """Normalize an optional LGW value.
+
+        :param value: Candidate LGW setting.
+        :returns: Stripped value, or ``None`` when absent.
         """
 
         if value is None:
@@ -279,23 +351,76 @@ class _RawSipClientConfig(BaseModel):
             raise ValueError("transport cannot be empty")
         return stripped
 
+    @model_validator(mode="after")
+    def _validate_endpoint_fields(self) -> Self:
+        """Validate fields required by each client kind.
+
+        :returns: Validated raw SIP client configuration.
+        :raises ValueError: If the selected kind has incomplete or conflicting fields.
+        """
+
+        if self.kind == "sip":
+            if not self.id_uri or not self.registrar_uri:
+                raise ValueError("id_uri and registrar_uri are required for kind 'sip'")
+            return self
+
+        required = {
+            "registrar_domain": self.registrar_domain,
+            "trunk_group": self.trunk_group,
+            "line_port": self.line_port,
+            "outbound_proxy": self.outbound_proxy,
+        }
+        missing = [name for name, value in required.items() if not value]
+        if missing:
+            raise ValueError(f"kind 'local_gateway' requires {', '.join(missing)}")
+        if self.transport != "tls":
+            raise ValueError("kind 'local_gateway' requires transport 'tls'")
+        if self.proxy_uri:
+            raise ValueError("use outbound_proxy instead of proxy_uri for kind 'local_gateway'")
+        if self.extension or self.enable_video:
+            raise ValueError("extension and enable_video are not supported for kind 'local_gateway'")
+        if self.line_port and self.registrar_domain:
+            _local_gateway_line_port_user(self.line_port, self.registrar_domain)
+        return self
+
     def to_config(self) -> SipClientConfig:
-        """Convert the raw model into the public dataclass config.
+        """Convert the raw model into its public SIP client configuration.
+
+        Local Gateway entries synthesize the registrar URI and From identity from
+        the separate Control Hub fields.
 
         :returns: SIP client configuration dataclass.
         """
 
+        id_uri = self.id_uri
+        registrar_uri = self.registrar_uri
+        proxy_uri = self.proxy_uri
+        if self.kind == "local_gateway":
+            # CUBE uses Line/Port as the address-of-record user and OTG/DTG as a
+            # URI parameter; Digest authentication uses the separate credentials.
+            line_port_user = _local_gateway_line_port_user(self.line_port or "", self.registrar_domain or "")
+            id_uri = f"sip:{line_port_user}@{self.registrar_domain};otg={self.trunk_group}"
+            # IOS XE uses SIPS for TLS discovery, then its SIP profile rewrites
+            # the REGISTER request URI to SIP while the TLS transport stays active.
+            registrar_uri = f"sip:{self.registrar_domain}:5061"
+            proxy_uri = _local_gateway_proxy_uri(self.outbound_proxy or "")
+
         return SipClientConfig(
             name=self.name,
-            id_uri=self.id_uri,
-            registrar_uri=self.registrar_uri,
+            id_uri=id_uri or "",
+            registrar_uri=registrar_uri or "",
             username_env=self.username_env,
             password_env=self.password_env,
             extension=self.extension,
-            proxy_uri=self.proxy_uri,
+            proxy_uri=proxy_uri,
             transport=self.transport,
             enable_video=self.enable_video,
             local_port=self.local_port,
+            kind=self.kind,
+            registrar_domain=self.registrar_domain,
+            trunk_group=self.trunk_group,
+            line_port=self.line_port,
+            outbound_proxy=self.outbound_proxy,
         )
 
 
@@ -512,6 +637,51 @@ def _ensure_unique(kind: str, values: list[str]) -> None:
     duplicates = sorted({value for value in values if value in seen or seen.add(value)})
     if duplicates:
         raise ConfigError(f"Duplicate {kind} name(s): {', '.join(duplicates)}")
+
+
+def _local_gateway_proxy_uri(address: str) -> str:
+    """Convert a Control Hub outbound proxy value into a TLS route URI.
+
+    :param address: Hostname, ``dns:`` address, or SIP URI from Control Hub.
+    :returns: Proxy URI configured for PJSUA2.
+    """
+
+    value = address.strip()
+    if value.lower().startswith("dns:"):
+        value = value[4:]
+    if value.lower().startswith("sips:"):
+        uri = value
+    elif value.lower().startswith("sip:"):
+        uri = value
+        if "transport=tls" not in uri.lower():
+            uri += ";transport=tls"
+    else:
+        uri = f"sips:{value}"
+    parameters = uri.split(";", 1)[1:] or [""]
+    if not any(parameter.lower() == "lr" for parameter in parameters):
+        uri += ";lr"
+    return uri
+
+
+def _local_gateway_line_port_user(line_port: str, registrar_domain: str) -> str:
+    """Extract the Line/Port user from either a bare value or a Control Hub AOR.
+
+    :param line_port: Line/Port user or ``user@registrar-domain`` value.
+    :param registrar_domain: Configured Control Hub Registrar Domain.
+    :returns: User component used in the SIP identity URI.
+    :raises ValueError: If the Line/Port AOR is malformed or has another domain.
+    """
+
+    if "@" not in line_port:
+        return line_port
+    if line_port.count("@") != 1:
+        raise ValueError("Line/Port must be a SIP user or one user@Registrar-Domain value")
+    user, domain = line_port.rsplit("@", 1)
+    if not user or not domain:
+        raise ValueError("Line/Port AOR must include both a user and domain")
+    if domain.lower().rstrip(".") != registrar_domain.lower().rstrip("."):
+        raise ValueError("Line/Port AOR domain must match registrar_domain")
+    return user
 
 
 def _ensure_unique_extensions(values: list[str | None]) -> None:

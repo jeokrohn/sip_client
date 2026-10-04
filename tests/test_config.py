@@ -256,6 +256,122 @@ clients:
         config.validate_credentials()
 
 
+def test_load_config_maps_multiple_local_gateways_and_keeps_password_in_environment(tmp_path: Path) -> None:
+    """Verify multiple LGW entries map Control Hub fields without storing secrets in YAML.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(
+        """
+clients:
+  - name: lgw1
+    kind: local_gateway
+    registrar_domain: registrar.example.invalid
+    trunk_group: trunk_123_lgu
+    line_port: line_456_lgu@registrar.example.invalid
+    outbound_proxy: dns:proxy.example.invalid
+    username_env: LGW1_USER
+    password_env: LGW1_PASSWORD
+  - name: lgw2
+    kind: local_gateway
+    registrar_domain: registrar2.example.invalid
+    trunk_group: trunk_789_lgu
+    line_port: line_987_lgu
+    outbound_proxy: sips:proxy2.example.invalid:8934
+    username_env: LGW2_USER
+    password_env: LGW2_PASSWORD
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path, env_file=None)
+    first = config.client("lgw1")
+    second = config.client("lgw2")
+
+    assert first.is_local_gateway
+    assert first.id_uri == "sip:line_456_lgu@registrar.example.invalid;otg=trunk_123_lgu"
+    assert first.registrar_uri == "sip:registrar.example.invalid:5061"
+    assert first.proxy_uri == "sips:proxy.example.invalid;lr"
+    assert first.username_env == "LGW1_USER"
+    assert first.password_env == "LGW1_PASSWORD"
+    assert second.proxy_uri == "sips:proxy2.example.invalid:8934;lr"
+    with pytest.raises(ConfigError, match="LGW1_USER"):
+        first.credentials({})
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ("", "registrar_domain"),
+        (
+            "    registrar_domain: registrar.example.invalid\n    transport: udp",
+            "requires transport 'tls'",
+        ),
+    ],
+)
+def test_load_config_rejects_incomplete_or_insecure_local_gateway(
+    tmp_path: Path,
+    fields: str,
+    message: str,
+) -> None:
+    """Verify LGW config requires trunk fields and TLS transport.
+
+    :param tmp_path: Temporary pytest directory.
+    :param fields: Additional YAML settings to apply.
+    :param message: Expected config error text.
+    :returns: None.
+    """
+
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(
+        f"""
+clients:
+  - name: lgw1
+    kind: local_gateway
+{fields}
+    trunk_group: trunk_lgu
+    line_port: line_lgu
+    outbound_proxy: proxy.example.invalid
+    username_env: LGW_USER
+    password_env: LGW_PASSWORD
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match=message):
+        load_config(config_path, env_file=None)
+
+
+def test_load_config_rejects_line_port_aor_from_another_domain(tmp_path: Path) -> None:
+    """Verify a qualified Line/Port value cannot silently replace the registrar domain.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(
+        """
+clients:
+  - name: lgw1
+    kind: local_gateway
+    registrar_domain: registrar.example.invalid
+    trunk_group: trunk_lgu
+    line_port: line_lgu@other.example.invalid
+    outbound_proxy: proxy.example.invalid
+    username_env: LGW_USER
+    password_env: LGW_PASSWORD
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="Line/Port AOR domain must match registrar_domain"):
+        load_config(config_path, env_file=None)
+
+
 def test_load_dotenv_rejects_malformed_line(tmp_path: Path) -> None:
     """Verify malformed dotenv lines are rejected.
 

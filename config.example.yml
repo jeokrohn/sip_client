@@ -19,6 +19,17 @@ clients:
     extension: "1002"
     transport: tls
     enable_video: true
+  # Registration-based Local Gateway example. Copy your own Control Hub values
+  # into a local config and keep the password in the referenced environment variable.
+  # - name: lgw1
+  #   kind: local_gateway
+  #   registrar_domain: "example.cisco-bcld.com"
+  #   trunk_group: "example_trunk_group"
+  #   line_port: "example_line_port"
+  #   outbound_proxy: "example.sipconnect-us.bcld.webex.com"
+  #   username_env: WX_LGW1_AUTH_USER
+  #   password_env: WX_LGW1_AUTH_PASSWORD
+  #   transport: tls
 targets:
   - name: webex_user
     uri: "sip:someone@example.com"

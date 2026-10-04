@@ -3,6 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
+import hashlib
+import importlib.util
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
 import wave
 from contextlib import suppress
 from fnmatch import fnmatchcase
@@ -40,17 +48,20 @@ class Pjsua2SipBackend:
         self.config: LabConfig | None = None
         self.loop: asyncio.AbstractEventLoop | None = None
         self.poll_task: asyncio.Task[None] | None = None
+        self.transport_ids: dict[str, int] = {}
         self.accounts: dict[str, Any] = {}
         self.calls: dict[str, Any] = {}
         self.call_handles: dict[str, CallHandle] = {}
+        self.lgw_rewrite_handles: tuple[Any, Any] | None = None
 
     async def initialize(self, config: LabConfig, pjsip_log_path: Path | None = None) -> None:
-        """Initialize PJSUA2 endpoint, transport, and polling.
+        """Initialize PJSUA2 endpoint, per-client transports, and polling.
 
         :param config: Parsed lab configuration.
         :param pjsip_log_path: Optional PJSIP log file path.
         :returns: None.
-        :raises BackendError: If PJSUA2 bindings are not importable.
+        :raises BackendError: If PJSUA2 bindings or the LGW rewrite module cannot be loaded.
+        :side effect: Builds and registers the native REGISTER header hook when LGW clients are configured.
         """
 
         try:
@@ -80,12 +91,29 @@ class Pjsua2SipBackend:
             ep_cfg.logConfig.filename = str(pjsip_log_path)
         self.endpoint.libInit(ep_cfg)
 
-        transport = self._transport_type(config.clients[0].transport)
-        transport_cfg = pj.TransportConfig()
-        first_port = next((client.local_port for client in config.clients if client.local_port), None)
-        if first_port:
-            transport_cfg.port = int(first_port)
-        self.endpoint.transportCreate(transport, transport_cfg)
+        if any(client.is_local_gateway for client in config.clients):
+            self.lgw_rewrite_handles = _load_lgw_to_rewrite_module(pj)
+
+        # Each account must use the signaling transport its URI requires. A lab
+        # can mix ordinary SIP endpoints and TLS-only LGW accounts in one run.
+        for client in config.clients:
+            transport_name = client.transport.lower()
+            if transport_name in self.transport_ids:
+                continue
+            transport_cfg = pj.TransportConfig()
+            local_port = next(
+                (
+                    candidate.local_port
+                    for candidate in config.clients
+                    if candidate.transport.lower() == transport_name and candidate.local_port
+                ),
+                None,
+            )
+            if local_port:
+                transport_cfg.port = int(local_port)
+            self.transport_ids[transport_name] = int(
+                self.endpoint.transportCreate(self._transport_type(transport_name), transport_cfg)
+            )
         self.endpoint.libStart()
         _disable_audio_codecs(self.endpoint, _DISABLED_CODEC_PATTERNS)
         _prioritize_audio_codecs(self.endpoint, _PREFERRED_CODEC_PRIORITIES)
@@ -93,9 +121,10 @@ class Pjsua2SipBackend:
         self.poll_task = asyncio.create_task(self._poll_events())
 
     async def shutdown(self) -> None:
-        """Destroy PJSUA2 resources.
+        """Destroy PJSUA2 resources and unload Local Gateway SIP hook state.
 
         :returns: None.
+        :side effect: Sends account unregistration during PJSUA2 shutdown when applicable.
         """
 
         if self.poll_task:
@@ -106,8 +135,13 @@ class Pjsua2SipBackend:
         self.calls.clear()
         self.call_handles.clear()
         self.accounts.clear()
+        self.transport_ids.clear()
         if self.endpoint is not None:
             self.endpoint.libDestroy()
+            if self.lgw_rewrite_handles is not None:
+                native_module, _pjsua2_global = self.lgw_rewrite_handles
+                native_module.wxcalls_reset_lgw_rewrite_module()
+                self.lgw_rewrite_handles = None
 
     async def register_client(
         self,
@@ -115,12 +149,14 @@ class Pjsua2SipBackend:
         credentials: SipCredentials,
         timeout: float = 30.0,
     ) -> RegistrationResult:
-        """Create and register a PJSUA2 account.
+        """Create and register a PJSUA2 account, including LGW settings when selected.
 
         :param client: Client configuration to register.
         :param credentials: Resolved SIP credentials.
         :param timeout: Maximum registration wait in seconds.
         :returns: Registration result.
+        :raises BackendError: If signaling setup fails or the registrar rejects the account.
+        :raises WxTimeoutError: If registration does not succeed before the timeout.
         """
 
         self._require_ready()
@@ -128,10 +164,29 @@ class Pjsua2SipBackend:
         acc_cfg = pj.AccountConfig()
         acc_cfg.idUri = client.id_uri
         acc_cfg.regConfig.registrarUri = client.registrar_uri
+        transport_id = self.transport_ids.get(client.transport.lower())
+        if transport_id is not None and hasattr(acc_cfg.sipConfig, "transportId"):
+            acc_cfg.sipConfig.transportId = transport_id
+        if client.is_local_gateway:
+            # Webex accepts a 240-second request but grants 120 seconds in the
+            # observed 200 response. PJSIP's setting is a lead time before the
+            # granted expiry, so 60 seconds schedules refresh halfway through it.
+            acc_cfg.regConfig.timeoutSec = 240
+            acc_cfg.regConfig.delayBeforeRefreshSec = 60
+            path_header = pj.SipHeader()
+            path_header.hName = "Supported"
+            path_header.hValue = "path"
+            acc_cfg.regConfig.headers.append(path_header)
         if client.proxy_uri:
             acc_cfg.sipConfig.proxies.append(client.proxy_uri)
         acc_cfg.sipConfig.authCreds.append(
-            pj.AuthCredInfo("digest", "*", credentials.username, 0, credentials.password)
+            pj.AuthCredInfo(
+                "digest",
+                "BroadWorks" if client.is_local_gateway else "*",
+                credentials.username,
+                0,
+                credentials.password,
+            )
         )
         _validate_secure_signaling_for_mandatory_srtp(client)
         _configure_srtp(acc_cfg, pj)
@@ -591,6 +646,83 @@ class Pjsua2SipBackend:
             await asyncio.sleep(0.01)
 
 
+def _load_lgw_to_rewrite_module(pj: Any) -> tuple[Any, Any]:
+    """Build and register the PJSIP module that strips OTG from LGW REGISTER To.
+
+    :param pj: Imported PJSUA2 Python module.
+    :returns: Handles keeping the PJSUA2 and rewrite libraries loaded.
+    :raises BackendError: If PJSIP headers, a compiler, or exported symbols are unavailable.
+    """
+
+    root = Path(os.environ.get("PJSIP_ROOT", Path.home() / "Documents/workspace/pjproject"))
+    source = Path(__file__).with_name("pjsip_lgw_rewrite.c")
+    include_dirs = [
+        root / "pjlib/include",
+        root / "pjlib-util/include",
+        root / "pjnath/include",
+        root / "pjmedia/include",
+        root / "pjsip/include",
+    ]
+    required_headers = [
+        root / "pjlib/include/pj/config.h",
+        root / "pjsip/include/pjsip/sip_module.h",
+        root / "pjsip/include/pjsip/sip_uri.h",
+        source,
+    ]
+    if any(not path.is_file() for path in required_headers):
+        raise BackendError(
+            "LGW REGISTER To rewriting needs PJSIP source headers. Set PJSIP_ROOT to the pjproject source directory."
+        )
+
+    compiler = os.environ.get("CC") or ("clang" if sys.platform == "darwin" else "cc")
+    compiler_path = shutil.which(compiler)
+    if compiler_path is None:
+        raise BackendError(f"Cannot build the LGW PJSIP rewrite module: compiler {compiler!r} was not found")
+
+    digest = hashlib.sha256()
+    digest.update(source.read_bytes())
+    for path in required_headers[:-1]:
+        digest.update(path.read_bytes())
+    digest.update(str(root.resolve()).encode())
+    cache_dir = Path(tempfile.gettempdir()) / "wxcalls-pjsip" / digest.hexdigest()[:20]
+    library = cache_dir / ("wxcalls_lgw_rewrite.dylib" if sys.platform == "darwin" else "wxcalls_lgw_rewrite.so")
+    if not library.is_file():
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        command = [compiler_path]
+        command.extend(
+            ["-dynamiclib", "-undefined", "dynamic_lookup"] if sys.platform == "darwin" else ["-shared", "-fPIC"]
+        )
+        endianness = ["-DPJ_IS_LITTLE_ENDIAN=1", "-DPJ_IS_BIG_ENDIAN=0"]
+        if sys.byteorder == "big":
+            endianness.reverse()
+        command.extend(endianness)
+        command.extend(f"-I{path}" for path in include_dirs)
+        command.extend([str(source), "-o", str(library)])
+        try:
+            subprocess.run(command, check=True, capture_output=True, text=True)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            detail = getattr(exc, "stderr", "")
+            raise BackendError(f"Could not compile the LGW PJSIP rewrite module: {detail[-1000:]}") from exc
+
+    extension = importlib.util.find_spec("_pjsua2")
+    if extension is None or extension.origin is None:
+        raise BackendError("Cannot locate the native _pjsua2 module to register the LGW SIP rewrite hook")
+    try:
+        pjsua2_global = ctypes.CDLL(extension.origin, mode=ctypes.RTLD_GLOBAL)
+        native_module = ctypes.CDLL(str(library), mode=ctypes.RTLD_GLOBAL)
+        register = native_module.wxcalls_register_lgw_rewrite_module
+        register.argtypes = []
+        register.restype = ctypes.c_int
+        status = register()
+    except (AttributeError, OSError) as exc:
+        raise BackendError(f"Could not load the LGW PJSIP rewrite module: {exc}") from exc
+    if status != 0:
+        raise BackendError(f"PJSIP rejected the LGW REGISTER rewrite module (status={status})")
+    native_module.wxcalls_reset_lgw_rewrite_module.argtypes = []
+    native_module.wxcalls_reset_lgw_rewrite_module.restype = None
+    return native_module, pjsua2_global
+
+
 def _create_account_adapter(backend: Pjsua2SipBackend, client_name: str) -> Any:
     """Create a concrete ``pj.Account`` subclass with Python callbacks.
 
@@ -614,6 +746,7 @@ def _create_account_adapter(backend: Pjsua2SipBackend, client_name: str) -> Any:
             self.registered = asyncio.Event()
             self.registration_events: asyncio.Queue[RegistrationResult] = asyncio.Queue()
             self.last_registration: RegistrationResult | None = None
+            self.last_registration_failure: tuple[int, str] | None = None
             self.successful_registration_count = 0
             self.incoming: asyncio.Queue[CallHandle] = asyncio.Queue()
 
@@ -642,9 +775,13 @@ def _create_account_adapter(backend: Pjsua2SipBackend, client_name: str) -> Any:
                     metadata={"code": code, "reason": str(getattr(prm, "reason", ""))},
                 )
                 self.last_registration = result
+                self.last_registration_failure = None
                 self.successful_registration_count += 1
                 self.backend.loop.call_soon_threadsafe(self.registration_events.put_nowait, result)
                 self.backend.loop.call_soon_threadsafe(self.registered.set)
+            elif code >= 300:
+                reason = str(getattr(prm, "reason", ""))
+                self.last_registration_failure = (code, reason)
 
         def onIncomingCall(self, prm: Any) -> None:  # noqa: N802 - PJSUA2 callback name
             """PJSUA2 callback for incoming calls.
@@ -668,12 +805,18 @@ def _create_account_adapter(backend: Pjsua2SipBackend, client_name: str) -> Any:
 
             :param timeout: Maximum registration wait in seconds.
             :returns: Registration result from the successful callback.
+            :raises BackendError: If the registrar rejects registration.
             :raises WxTimeoutError: If registration does not succeed before timeout.
             """
 
             try:
                 return await asyncio.wait_for(self.registration_events.get(), timeout=timeout)
             except TimeoutError as exc:
+                failure = self.last_registration_failure
+                if failure is not None:
+                    code, reason = failure
+                    detail = f"SIP {code} {reason}".strip()
+                    raise BackendError(f"Registration rejected for SIP client {self.client_name}: {detail}") from exc
                 raise WxTimeoutError(f"Timed out registering SIP client {self.client_name}") from exc
 
     return AccountAdapter()

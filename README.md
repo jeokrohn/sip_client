@@ -30,6 +30,34 @@ For Webex outbound proxies that publish only SIP SRV records, set `dns_nameserve
 `sips:` proxy URI so PJSIP can resolve `_sips._tcp` targets. If `dns_nameservers` is omitted or
 empty on macOS, `wxcalls` falls back to the nameservers reported by `scutil --dns`.
 
+To register a synthetic registration-based Local Gateway, add a client with `kind: local_gateway`.
+Use the values shown for the trunk in Control Hub. `line_port` may be the SIP user alone or a
+`user@registrar-domain` value; when a domain is included, it must match `registrar_domain`.
+The user becomes the SIP identity user, `trunk_group` becomes its `otg` URI parameter, and the credentials referenced by `username_env` and
+`password_env` are used for the BroadWorks Digest challenge. The gateway registers over TLS through
+`outbound_proxy`; registration requests ask for a 240-second interval. Given the 120-second expiry
+Webex currently grants, PJSIP refreshes 60 seconds before expiry to renew at the negotiated midpoint.
+The LGW REGISTER `To` header is corrected by a small PJSIP transmit hook, which removes `otg` from
+`To` while preserving it in `From`. This hook is compiled against the PJSIP headers at startup;
+`PJSIP_ROOT` may point to the pjproject source tree (the default is `~/Documents/workspace/pjproject`).
+
+```yaml
+clients:
+  - name: lgw1
+    kind: local_gateway
+    registrar_domain: "example.cisco-bcld.com"
+    trunk_group: "example_trunk_group"
+    line_port: "example_line_port"
+    outbound_proxy: "example.sipconnect-us.bcld.webex.com"
+    username_env: WX_LGW1_AUTH_USER
+    password_env: WX_LGW1_AUTH_PASSWORD
+    transport: tls
+```
+
+Put the authentication username and password in `.env` or the process environment. As with other
+clients, use the existing `register` scenario action and refer to `lgw1` by name. The framework
+validates SIP registration; confirm the trunk's Online status manually in Control Hub.
+
 ```bash
 cp config.example.yml config.local.yml
 cat > .env <<'EOF'

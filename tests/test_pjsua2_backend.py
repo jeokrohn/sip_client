@@ -4,11 +4,12 @@ import asyncio
 from contextlib import suppress
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
 from wxcalls.backends import pjsua2 as pjsua2_backend
-from wxcalls.backends.base import CallHandle
+from wxcalls.backends.base import CallHandle, RegistrationResult
 from wxcalls.backends.pjsua2 import (
     Pjsua2SipBackend,
     _configure_srtp,
@@ -20,12 +21,14 @@ from wxcalls.backends.pjsua2 import (
     _set_call_media_counts,
     _validate_secure_signaling_for_mandatory_srtp,
 )
-from wxcalls.config import SipClientConfig
+from wxcalls.config import SipClientConfig, SipCredentials
 from wxcalls.exceptions import BackendError
 from wxcalls.media import create_silence_wav
 
 
 class FakePj:
+    """Minimal PJSUA2 constants and value objects used by backend tests."""
+
     PJMEDIA_SRTP_MANDATORY = 2
     PJMEDIA_SRTP_KEYING_SDES = 0
     PJSUA_CALL_MEDIA_ACTIVE = 1
@@ -38,6 +41,18 @@ class FakePj:
             """
 
             self.name = ""
+
+    class SipHeader:
+        """Capture custom SIP header values for tests."""
+
+        def __init__(self) -> None:
+            """Create an empty fake SIP header.
+
+            :returns: None.
+            """
+
+            self.hName = ""
+            self.hValue = ""
 
 
 class FakeMediaConfig:
@@ -71,6 +86,161 @@ class FakeAccountConfig:
         """
 
         self.mediaConfig = FakeMediaConfig()
+
+
+def test_register_local_gateway_configures_identity_auth_proxy_and_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify LGW account fields configure independent identity and Digest credentials.
+
+    :param monkeypatch: Pytest monkeypatch fixture.
+    :returns: None.
+    """
+
+    captured: dict[str, object] = {}
+
+    class FakeRegistrationPj(FakePj):
+        """Provide fake PJSUA2 constructors for registration account tests."""
+
+        @staticmethod
+        def AccountConfig() -> SimpleNamespace:  # noqa: N802 - PJSUA2 API name
+            """Build a mutable fake PJSUA2 account config.
+
+            :returns: Account config with registration, signaling, and media fields.
+            """
+
+            return SimpleNamespace(
+                idUri="",
+                regConfig=SimpleNamespace(
+                    registrarUri="",
+                    timeoutSec=0,
+                    delayBeforeRefreshSec=0,
+                    headers=[],
+                ),
+                sipConfig=SimpleNamespace(proxies=[], authCreds=[], transportId=0),
+                mediaConfig=FakeMediaConfig(),
+                videoConfig=SimpleNamespace(),
+            )
+
+        @staticmethod
+        def AuthCredInfo(*args: object) -> tuple[object, ...]:  # noqa: N802 - PJSUA2 API name
+            """Capture the PJSUA2 digest credential arguments.
+
+            :param args: Credential constructor arguments.
+            :returns: Captured credential arguments.
+            """
+
+            return args
+
+    class FakeRegistrationAccount:
+        """Capture registration configuration without opening a network socket."""
+
+        def create(self, account_config: object) -> None:
+            """Save the generated PJSUA2 account configuration.
+
+            :param account_config: Generated account configuration.
+            :returns: None.
+            """
+
+            captured["account_config"] = account_config
+
+        async def wait_registered(self, timeout: float) -> RegistrationResult:
+            """Return a simulated successful registration result.
+
+            :param timeout: Ignored registration timeout.
+            :returns: Simulated successful registration result.
+            """
+
+            return RegistrationResult(client_name="lgw1", expires=120, metadata={"code": 200})
+
+    backend = Pjsua2SipBackend()
+    backend.pj = FakeRegistrationPj
+    backend.endpoint = object()
+    client = SipClientConfig(
+        name="lgw1",
+        id_uri="sip:line_lgu@registrar.example.invalid;otg=trunk_lgu",
+        registrar_uri="sip:registrar.example.invalid:5061",
+        username_env="LGW_USER",
+        password_env="LGW_PASSWORD",
+        proxy_uri="sips:proxy.example.invalid;lr",
+        transport="tls",
+        kind="local_gateway",
+    )
+    backend.transport_ids["tls"] = 42
+
+    async def run() -> RegistrationResult:
+        """Register the fake Local Gateway account.
+
+        :returns: Simulated successful registration result.
+        """
+
+        backend.loop = asyncio.get_running_loop()
+        monkeypatch.setattr(
+            pjsua2_backend,
+            "_create_account_adapter",
+            lambda backend_, name: FakeRegistrationAccount(),
+        )
+        return await backend.register_client(
+            client,
+            SipCredentials(username="auth_user", password="auth_password"),
+        )
+
+    result = asyncio.run(run())
+    account_config = cast(Any, captured["account_config"])
+
+    assert result.expires == 120
+    assert account_config.idUri == "sip:line_lgu@registrar.example.invalid;otg=trunk_lgu"
+    assert account_config.regConfig.registrarUri == "sip:registrar.example.invalid:5061"
+    assert account_config.regConfig.timeoutSec == 240
+    assert account_config.regConfig.delayBeforeRefreshSec == 60
+    assert [(header.hName, header.hValue) for header in account_config.regConfig.headers] == [("Supported", "path")]
+    assert account_config.sipConfig.proxies == ["sips:proxy.example.invalid;lr"]
+    assert account_config.sipConfig.authCreds == [("digest", "BroadWorks", "auth_user", 0, "auth_password")]
+    assert account_config.sipConfig.transportId == 42
+
+
+def test_registration_rejection_reports_sip_status() -> None:
+    """Verify a rejected registration surfaces its SIP response instead of only timing out.
+
+    :returns: None.
+    """
+
+    class FakeCallbackPj:
+        """Provide a minimal PJSUA2 account base for callback testing."""
+
+        class Account:
+            """Provide account info for a failed registration callback."""
+
+            def __init__(self) -> None:
+                """Create a fake account base.
+
+                :returns: None.
+                """
+
+            def getInfo(self) -> SimpleNamespace:  # noqa: N802 - PJSUA2 API name
+                """Return inactive registration state.
+
+                :returns: Fake account info.
+                """
+
+                return SimpleNamespace(regIsActive=False)
+
+    async def run() -> None:
+        """Exercise an unauthorized registration callback.
+
+        :returns: None.
+        """
+
+        backend = Pjsua2SipBackend()
+        backend.pj = FakeCallbackPj
+        backend.loop = asyncio.get_running_loop()
+        account = pjsua2_backend._create_account_adapter(backend, "lgw1")
+        account.onRegState(SimpleNamespace(code=401, reason="Unauthorized", expiration=0))
+
+        with pytest.raises(BackendError, match="SIP 401 Unauthorized"):
+            await account.wait_registered(0.001)
+
+    asyncio.run(run())
 
 
 class FakeCodecEndpoint:
