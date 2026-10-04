@@ -138,6 +138,22 @@ steps:
 
 This dials Bob's configured `extension` as `sip:<extension>@<alice-registrar-host>` instead of dialing Bob's `id_uri`.
 
+For an E.164 destination called from a registration-based Local Gateway, specify the number directly. The runner
+builds `sip:<number>@<registrar_domain>:5061` from the LGW configuration. Per-call `caller_id` replaces the INVITE
+From identity and is also used for `P-Asserted-Identity`; optional `pai_caller_id` overrides only the PAI identity.
+Both identities accept digits with an optional leading `+` and are supported on Local Gateway calls.
+
+```yaml
+steps:
+  - action: call
+    client: lgw_darmstadt
+    target: "+18725550103"
+    caller_id: "+442074037970"
+    # Optional: if omitted, PAI uses caller_id when supplied.
+    pai_caller_id: "+442074037971"
+    save_as: lgw_outbound
+```
+
 Use `parallel` when two or more clients need to act independently during the same wall-clock interval:
 
 ```yaml

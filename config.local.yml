@@ -38,5 +38,16 @@ clients:
     extension: "7105"
     transport: tls
     enable_video: false
+  # Registration-based Local Gateway example. Copy your own Control Hub values
+  # into a local config and keep the password in the referenced environment variable.
+  - name: lgw_darmstadt
+    kind: local_gateway
+    registrar_domain: "90236926.us10.bcld.webex.com"
+    trunk_group: "darmstadt0906895623_lgu"
+    line_port: "Darmstadt1000654249_LGU@90236926.us10.bcld.webex.com"
+    outbound_proxy: "fr07.sipconnect-eun.bcld.webex.com"
+    username_env: WX_LGW_DARMSTADT_AUTH_USER
+    password_env: WX_LGW_DARMSTADT_AUTH_PASSWORD
+    transport: tls
 
 targets: []

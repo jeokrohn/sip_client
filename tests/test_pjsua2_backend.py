@@ -15,6 +15,7 @@ from wxcalls.backends.pjsua2 import (
     _configure_srtp,
     _disable_audio_codecs,
     _is_active_media_status,
+    _local_gateway_caller_uri,
     _prioritize_audio_codecs,
     _reroute_audio_players,
     _reroute_audio_recorders,
@@ -24,6 +25,28 @@ from wxcalls.backends.pjsua2 import (
 from wxcalls.config import SipClientConfig, SipCredentials
 from wxcalls.exceptions import BackendError
 from wxcalls.media import create_silence_wav
+
+
+def test_local_gateway_caller_uri_keeps_otg_inside_bracketed_uri() -> None:
+    """Ensure a caller ID override serializes OTG as a URI parameter.
+
+    :returns: None.
+    """
+
+    client = SipClientConfig(
+        name="lgw1",
+        id_uri="sip:line@registrar.example.invalid;otg=trunk",
+        registrar_uri="sip:registrar.example.invalid:5061",
+        username_env="LGW_USER",
+        password_env="LGW_PASSWORD",
+        kind="local_gateway",
+        registrar_domain="registrar.example.invalid",
+        trunk_group="trunk",
+    )
+
+    assert _local_gateway_caller_uri(client, "+442074037970") == (
+        "<sip:+442074037970@registrar.example.invalid;otg=trunk>"
+    )
 
 
 class FakePj:

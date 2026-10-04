@@ -249,6 +249,8 @@ class Pjsua2SipBackend:
         target_uri: str,
         timeout: float = 30.0,
         video: bool = False,
+        caller_id: str | None = None,
+        pai_caller_id: str | None = None,
     ) -> CallHandle:
         """Place an outgoing call through a registered PJSUA2 account.
 
@@ -256,10 +258,29 @@ class Pjsua2SipBackend:
         :param target_uri: Dialable SIP target URI.
         :param timeout: Retained for backend API compatibility; use ``wait_state`` for call setup waits.
         :param video: Whether to offer a video media stream.
+        :param caller_id: Optional numeric LGW identity for the INVITE From and default PAI headers.
+        :param pai_caller_id: Optional numeric identity overriding only the P-Asserted-Identity header.
         :returns: Created outgoing call handle.
+        :raises BackendError: If caller identity overrides are used with a non-LGW account.
         """
 
         account = self._account(client_name)
+        prm = self.pj.CallOpParam(True)
+        _set_call_media_counts(prm, video_count=1 if video else 0, text_count=0)
+        if caller_id is not None or pai_caller_id is not None:
+            client = self.config.client(client_name) if self.config is not None else None
+            if client is None or not client.is_local_gateway:
+                raise BackendError("caller_id and pai_caller_id are supported only for Local Gateway calls")
+            tx_option = self.pj.SipTxOption()
+            if caller_id is not None:
+                tx_option.localUri = _local_gateway_caller_uri(client, caller_id)
+            pai_identity = pai_caller_id if pai_caller_id is not None else caller_id
+            if pai_identity is not None:
+                pai_header = self.pj.SipHeader()
+                pai_header.hName = "P-Asserted-Identity"
+                pai_header.hValue = f"<sips:{pai_identity}@{client.registrar_domain}>"
+                tx_option.headers.append(pai_header)
+            prm.txOption = tx_option
         pj_call = _create_call_adapter(self, account)
         handle = self._register_call_handle(
             pj_call=pj_call,
@@ -267,8 +288,6 @@ class Pjsua2SipBackend:
             remote_uri=target_uri,
             state="calling",
         )
-        prm = self.pj.CallOpParam(True)
-        _set_call_media_counts(prm, video_count=1 if video else 0, text_count=0)
         pj_call.makeCall(target_uri, prm)
         return handle
 
@@ -721,6 +740,25 @@ def _load_lgw_to_rewrite_module(pj: Any) -> tuple[Any, Any]:
     native_module.wxcalls_reset_lgw_rewrite_module.argtypes = []
     native_module.wxcalls_reset_lgw_rewrite_module.restype = None
     return native_module, pjsua2_global
+
+
+def _local_gateway_caller_uri(client: SipClientConfig, caller_id: str) -> str:
+    """Build an LGW INVITE From URI using a per-call numeric caller identity.
+
+    :param client: Configured Local Gateway client.
+    :param caller_id: Numeric caller identity with an optional leading plus sign.
+    :returns: Bracketed SIP name-address carrying the registrar domain and trunk group.
+    :raises BackendError: If the client lacks LGW routing fields or the identity is not numeric.
+    """
+
+    digits = caller_id[1:] if caller_id.startswith("+") else caller_id
+    if not digits or not digits.isascii() or not digits.isdigit():
+        raise BackendError("Local Gateway caller_id must contain digits with an optional leading '+'")
+    if not client.registrar_domain or not client.trunk_group:
+        raise BackendError(f"Local Gateway client {client.name!r} is missing registrar or trunk group information")
+    # Brackets keep OTG inside the SIP URI instead of letting it parse as a
+    # generic From-header parameter after PJSIP appends the dialog tag.
+    return f"<sip:{caller_id}@{client.registrar_domain};otg={client.trunk_group}>"
 
 
 def _create_account_adapter(backend: Pjsua2SipBackend, client_name: str) -> Any:

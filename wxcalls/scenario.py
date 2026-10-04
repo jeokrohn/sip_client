@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
@@ -496,6 +497,7 @@ def _validate_common_fields(
     :param require_register_client: Whether register steps must name client(s).
     :returns: None.
     :raises ScenarioError: If shared fields are invalid.
+    :side effect: Normalizes numeric caller identity values on call actions.
     """
 
     timeout = params.get("timeout")
@@ -528,6 +530,10 @@ def _validate_common_fields(
         raise ScenarioError(f"{location} action {action!r} require_reregistration must be boolean")
     if "use_target_extension" in params and not isinstance(params["use_target_extension"], bool):
         raise ScenarioError(f"{location} action {action!r} use_target_extension must be boolean")
+    if action in {"call", "consult_call"}:
+        for field in ("caller_id", "pai_caller_id"):
+            if field in params:
+                params[field] = _numeric_call_identity(params[field], location, action, field)
     if "reuse_alias" in params and not isinstance(params["reuse_alias"], bool):
         raise ScenarioError(f"{location} action {action!r} reuse_alias must be boolean")
     min_reregistrations = params.get("min_reregistrations")
@@ -538,6 +544,25 @@ def _validate_common_fields(
     if action == "trigger_behavior":
         params["endpoint"] = _required_string(params.get("endpoint"), f"{location} action 'trigger_behavior' endpoint")
         params["name"] = _required_string(params.get("name"), f"{location} action 'trigger_behavior' name")
+
+
+def _numeric_call_identity(value: Any, location: str, action: str, field: str) -> str:
+    """Normalize a numeric call identity supplied by scenario YAML.
+
+    :param value: Caller identity value from YAML.
+    :param location: Human-readable scenario step location.
+    :param action: Scenario action name.
+    :param field: Identity field name.
+    :returns: Numeric identity with an optional leading plus sign.
+    :raises ScenarioError: If the identity contains non-numeric characters.
+    """
+
+    if isinstance(value, bool) or not isinstance(value, str | int):
+        raise ScenarioError(f"{location} action {action!r} {field} must contain digits with an optional leading '+'")
+    identity = str(value).strip()
+    if re.fullmatch(r"\+?[0-9]+", identity) is None:
+        raise ScenarioError(f"{location} action {action!r} {field} must contain digits with an optional leading '+'")
+    return identity
 
 
 def _validate_behavior_action_alias_reuse(action: str, params: dict[str, Any], location: str) -> None:

@@ -121,6 +121,8 @@ class FakeSipBackend:
         target_uri: str,
         timeout: float = 30.0,
         video: bool = False,
+        caller_id: str | None = None,
+        pai_caller_id: str | None = None,
     ) -> CallHandle:
         """Create an outgoing call and a linked incoming call for simulated clients.
 
@@ -128,6 +130,8 @@ class FakeSipBackend:
         :param target_uri: Target URI to dial.
         :param timeout: Ignored timeout kept for backend API compatibility.
         :param video: Whether to mark simulated video active.
+        :param caller_id: Ignored numeric caller identity for API compatibility.
+        :param pai_caller_id: Ignored numeric PAI override for API compatibility.
         :returns: Outgoing call handle.
         """
 

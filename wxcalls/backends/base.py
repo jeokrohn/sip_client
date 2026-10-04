@@ -128,6 +128,8 @@ class SipBackend(Protocol):
         target_uri: str,
         timeout: float = 30.0,
         video: bool = False,
+        caller_id: str | None = None,
+        pai_caller_id: str | None = None,
     ) -> CallHandle:
         """Place an outgoing call.
 
@@ -135,6 +137,8 @@ class SipBackend(Protocol):
         :param target_uri: Dialable target URI.
         :param timeout: Maximum call setup wait in seconds.
         :param video: Whether to offer video media.
+        :param caller_id: Optional numeric caller identity for From and the default PAI.
+        :param pai_caller_id: Optional numeric PAI override independent of From.
         :returns: Created call handle.
         """
 

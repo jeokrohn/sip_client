@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import wave
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
@@ -129,7 +130,8 @@ class CallLab:
         :param client_name: Logical client placing the call.
         :param target: Client name, target name, literal URI, or numeric extension.
         :param use_target_extension: Whether ``target`` names a client whose extension should be dialed.
-        :returns: Dialable SIP target for the backend.
+        :returns: Dialable SIP target for the backend. E.164 targets from an LGW
+            are expanded with that gateway's registrar domain and TLS port.
         :raises ScenarioError: If extension dialing cannot resolve a configured client extension.
         """
 
@@ -145,6 +147,9 @@ class CallLab:
             return self._extension_target_uri(client_name, target_client.extension)
 
         resolved = self.config.resolve_target_uri(target)
+        caller = self.config.client(client_name)
+        if resolved == target and caller.is_local_gateway and _is_e164_number(target):
+            return f"sip:{target}@{caller.registrar_domain}:5061"
         if resolved != target or ":" in resolved or "@" in resolved or not resolved.isdecimal():
             return resolved
 
@@ -396,11 +401,22 @@ class CallLab:
         )
         save_as = str(params.get("save_as", "call"))
         self._progress(f"call initiated: {params['client']} -> {target_uri} ({save_as})")
+        caller_id = params.get("caller_id")
+        pai_caller_id = params.get("pai_caller_id")
+        client = self.config.client(str(params["client"]))
+        if (caller_id is not None or pai_caller_id is not None) and not client.is_local_gateway:
+            raise ScenarioError("caller_id and pai_caller_id are supported only for Local Gateway calls")
+        call_options: dict[str, str] = {}
+        if caller_id is not None:
+            call_options["caller_id"] = str(caller_id)
+        if pai_caller_id is not None:
+            call_options["pai_caller_id"] = str(pai_caller_id)
         call = await self.backend.place_call(
             client_name=str(params["client"]),
             target_uri=target_uri,
             timeout=timeout,
             video=bool(params.get("video", False)),
+            **call_options,
         )
         self.calls[save_as] = call
         self.artifacts.record_event("call_placed", call=call.id, client=call.client_name, target=target_uri)
@@ -895,6 +911,16 @@ def _should_stay_registered(params: dict[str, Any]) -> bool:
     """
 
     return bool(params.get("stay_registered", False)) or "stay_registered_for" in params
+
+
+def _is_e164_number(value: str) -> bool:
+    """Return whether a target is a plus-prefixed E.164 dial string.
+
+    :param value: Candidate target string.
+    :returns: ``True`` when the value begins with ``+`` and contains digits only.
+    """
+
+    return re.fullmatch(r"\+[0-9]+", value) is not None
 
 
 def _wav_duration_seconds(path: Path) -> float:
