@@ -39,6 +39,10 @@ behaviors:
           - action: start_timer
             name: hangup_delay
             seconds: 20
+          - action: play_tts
+            call: outbound
+            text: "This is a media test. You should hear this message."
+            marker: media-check
         on:
           timer_expired:
             timer: hangup_delay
@@ -97,6 +101,11 @@ behaviors:
             call: inbound
             state: disconnected
             next_state: done
+        entry:
+          - action: play_tts
+            call: inbound
+            text: "This is a media test. You should hear this message. This is a media test. You should hear this message. This is a media test. You should hear this message"
+            marker: media-check
 
       done:
         entry:
