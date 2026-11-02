@@ -108,6 +108,19 @@ This command is experimental and PJSUA2-only. A worker crash fails the scenario 
 the other workers. If a worker is killed abruptly, its remote registration may remain until it expires. The regular
 `wxcalls run` command and pytest backend selection continue to use the existing single-process architecture.
 
+To watch workers in a local dashboard while a worker scenario runs, add `--dashboard`:
+
+```bash
+wxcalls workers run -c config.local.yml --dashboard scenarios/call-behaviors.yml
+```
+
+The dashboard is served on `http://127.0.0.1:8765` by default. Change the port with `--dashboard-port`; the page
+shows worker lifecycle, the current behavior state when the scenario defines one, current worker activity, and
+state age. Wait operations use their scenario timeout for attention flags; a running state with no update for
+120 seconds is flagged as no progress. Switch between the table, attention-first, and scenario-state lane views; each
+view is available with `?variant=table`, `?variant=focus`, or `?variant=lanes`. The dashboard is local to the run
+and keeps its state in memory.
+
 ## Call scenarios
 
 Use `wait_state` to assert call signaling state and `wait_media` to assert that audio media is active before playback:

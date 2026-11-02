@@ -542,6 +542,12 @@ class BehaviorRuntime:
             f"behavior {runtime.endpoint.name}/{runtime.behavior.name} "
             f"state={runtime.state} event={event} next_state={next_state} action={action}"
         )
+        self.lab._dashboard_event(
+            "scenario_state",
+            endpoint=runtime.endpoint.client,
+            state=runtime.state,
+            activity=f"{runtime.endpoint.name}/{runtime.behavior.name} · {event} · {action}",
+        )
 
     def _event_label(self, event: BehaviorEvent) -> str:
         """Return a compact event label for progress output.

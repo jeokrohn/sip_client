@@ -222,6 +222,9 @@ class CallLab:
                 await scenario_task
             else:
                 await execute_scenario()
+        except Exception as exc:
+            self._dashboard_event("scenario_failed", name=scenario.name, error=str(exc))
+            raise
         finally:
             scenario_tasks = [task for task in (scenario_task, failure_task) if task is not None]
             for task in scenario_tasks:
@@ -241,6 +244,7 @@ class CallLab:
         """
 
         self.artifacts.record_event("scenario_started", name=scenario.name, source=str(scenario.source or ""))
+        self._dashboard_event("scenario_started", name=scenario.name)
         step_count = len(scenario.steps)
         for step in scenario.steps:
             self.artifacts.record_event("step_started", index=step.index, action=step.action)
@@ -248,6 +252,7 @@ class CallLab:
             await self._run_step(step)
             self.artifacts.record_event("step_finished", index=step.index, action=step.action)
         self.artifacts.record_event("scenario_finished", name=scenario.name)
+        self._dashboard_event("scenario_finished", name=scenario.name)
 
     async def run_behavior_action(self, action: str, params: dict[str, Any]) -> None:
         """Run an action on behalf of an endpoint behavior.
@@ -852,6 +857,18 @@ class CallLab:
 
         if self.progress_reporter is not None:
             self.progress_reporter(message)
+
+    def _dashboard_event(self, event: str, **fields: Any) -> None:
+        """Forward scenario events to backends that expose a live dashboard.
+
+        :param event: Dashboard event name.
+        :param fields: Event details.
+        :returns: None.
+        """
+
+        publish = getattr(self.backend, "publish_dashboard_event", None)
+        if callable(publish):
+            publish(event, **fields)
 
     def _report_call_established(self, call_ref: str, call: CallHandle) -> None:
         """Report call establishment once per backend call id.

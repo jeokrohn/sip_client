@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>wxcalls worker dashboard</title>
+    <style>
+      :root { font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:#17233a; background:#f4f7fb; }
+      * { box-sizing:border-box; }
+      body { margin:0; }
+      header { background:#102847; color:white; padding:22px max(22px,calc((100vw - 1200px)/2)); display:flex; justify-content:space-between; align-items:center; }
+      h1 { font-size:20px; margin:0; }
+      header p { opacity:.75; margin:4px 0 0; }
+      .live { font-weight:700; color:#70e2ad; }
+      main { max-width:1200px; margin:auto; padding:24px 24px 100px; }
+      .top { display:flex; justify-content:space-between; align-items:end; margin-bottom:18px; }
+      .eyebrow { font-size:11px; color:#65738b; text-transform:uppercase; letter-spacing:.08em; font-weight:700; }
+      h2 { font-size:25px; letter-spacing:-.03em; margin:4px 0; }
+      .summary { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:0 0 20px; }
+      .metric,.panel { background:#fff; border:1px solid #dbe2ec; border-radius:10px; }
+      .metric { padding:14px 16px; }
+      .metric span { display:block; color:#65738b; font-size:12px; }
+      .metric b { display:block; font-size:24px; margin-top:4px; }
+      .panel { overflow:hidden; }
+      .panel-title { padding:15px 18px; border-bottom:1px solid #dbe2ec; font-weight:700; display:flex; justify-content:space-between; }
+      table { border-collapse:collapse; width:100%; min-width:850px; }
+      th { text-align:left; background:#f8fafc; color:#65738b; font-size:10px; letter-spacing:.07em; text-transform:uppercase; padding:11px 14px; }
+      td { padding:13px 14px; border-top:1px solid #e9edf3; vertical-align:middle; }
+      tr.attention,.worker-card.attention { background:#fff8e8; }
+      .name { font-weight:700; }
+      .sub { display:block; color:#65738b; font-size:11px; margin-top:2px; }
+      .badge { display:inline-block; padding:4px 9px; border-radius:99px; font-size:11px; font-weight:750; background:#edf0f4; color:#59667a; white-space:nowrap; }
+      .running { background:#e9f3fc; color:#1769aa; }
+      .waiting { background:#fff1cf; color:#9a5b00; }
+      .completed { background:#e5f5ed; color:#16794b; }
+      .failed { background:#fde9e7; color:#b42318; }
+      .tablewrap { overflow:auto; }
+      .empty { padding:35px; text-align:center; color:#65738b; }
+      .timestamp { color:#65738b; font-variant-numeric:tabular-nums; white-space:nowrap; }
+      .foot { font-size:12px; color:#65738b; margin:12px 3px; }
+      .view-nav { display:flex; gap:7px; margin:0 0 12px; }
+      .view-nav button { border:1px solid #d2dae6; background:white; color:#43536b; border-radius:7px; padding:8px 13px; font:inherit; font-size:12px; font-weight:700; cursor:pointer; }
+      .view-nav button[aria-pressed="true"] { background:#173b63; border-color:#173b63; color:white; }
+      .attention-list { display:grid; gap:0; padding:5px 16px; }
+      .worker-card { display:grid; grid-template-columns:1.1fr .8fr 1.4fr 100px; gap:16px; align-items:center; border-bottom:1px solid #e9edf3; padding:14px 9px; }
+      .worker-card:last-child { border-bottom:0; }
+      .lanes { display:grid; gap:10px; padding:14px; }
+      .lane { display:grid; grid-template-columns:155px 1fr; border:1px solid #e2e8f0; border-radius:8px; overflow:hidden; }
+      .lane-title { padding:12px; background:#f8fafc; font-weight:700; }
+      .lane-content { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:10px 12px; }
+      .state-step { border:1px solid #dbe2ec; border-radius:7px; padding:6px 9px; color:#59667a; background:white; font-size:12px; }
+      .state-step.past { color:#16794b; border-color:#9ed2b6; background:#f0faf4; }
+      .state-step.current { color:#1769aa; border-color:#84bce6; background:#eff8ff; font-weight:700; }
+      .state-step.attention { color:#9a5b00; border-color:#ecc477; background:#fff8e8; font-weight:700; }
+      .state-arrow { color:#9ba8ba; }
+      .switcher { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:#172b46; color:white; border-radius:99px; display:flex; align-items:center; gap:12px; padding:8px 12px; box-shadow:0 8px 28px #13233c40; z-index:5; }
+      .switcher button { border:0; background:#ffffff1a; color:white; width:30px; height:30px; border-radius:50%; cursor:pointer; font-size:18px; }
+      .switcher button:hover { background:#ffffff35; }
+      .switch-label { min-width:145px; text-align:center; font-size:12px; font-weight:700; }
+      @media(max-width:650px) { .summary { grid-template-columns:repeat(2,1fr); } .top { display:block; } .worker-card { grid-template-columns:1fr 1fr; gap:9px; } }
+      @media(max-width:650px) { .lane { grid-template-columns:1fr; } }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div><h1>wxcalls · worker dashboard</h1><p>Live view of scenario workers</p></div>
+      <div class="live">● <span id="connection">Connecting</span></div>
+    </header>
+    <main>
+      <div class="top">
+        <div><div class="eyebrow" id="scenario-meta">Waiting for run</div><h2 id="scenario">No scenario active</h2></div>
+        <div class="timestamp" id="updated"></div>
+      </div>
+      <section class="summary" aria-label="Run summary">
+        <div class="metric"><span>Workers</span><b id="count">0</b></div>
+        <div class="metric"><span>Running</span><b id="running">0</b></div>
+        <div class="metric"><span>Completed</span><b id="completed">0</b></div>
+        <div class="metric"><span>Needs attention</span><b id="attention">0</b></div>
+      </section>
+      <nav class="view-nav" aria-label="Worker view">
+        <button data-view="table">Table</button>
+        <button data-view="focus">Attention first</button>
+        <button data-view="lanes">State lanes</button>
+      </nav>
+      <section class="panel">
+        <div class="panel-title"><span id="panel-title">Workers</span><span class="sub" id="view-hint"></span></div>
+        <div id="view-content"></div>
+      </section>
+      <p class="foot">This dashboard listens on localhost. State is held in memory for this run.</p>
+    </main>
+    <div class="switcher" aria-label="Prototype view switcher">
+      <button id="prev" aria-label="Previous view">‹</button>
+      <span class="switch-label" id="variant-label"></span>
+      <button id="next" aria-label="Next view">›</button>
+    </div>
+    <script>
+      const views = ["table", "focus", "lanes"];
+      const names = { table:"Worker table", focus:"Attention first", lanes:"State lanes" };
+      const titles = { table:"Workers", focus:"Worker attention queue", lanes:"Workers grouped by lifecycle" };
+      const hints = { table:"Scenario order", focus:"Flagged workers appear first", lanes:"Current lifecycle status" };
+      const esc = value => String(value ?? "").replace(/[&<>"]/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[char]));
+      const clock = seconds => { const value=Math.max(0,Math.floor(seconds)); return `${Math.floor(value/60)}m ${String(value%60).padStart(2,"0")}s`; };
+      let current = new URLSearchParams(location.search).get("variant") || "table";
+      if (!views.includes(current)) current = "table";
+      let latestWorkers = [];
+
+      function age(worker) {
+        return worker.state_since ? clock((Date.now()-Date.parse(worker.state_since))/1000) : "—";
+      }
+
+      function badge(worker) {
+        const status = esc(worker.status || "queued");
+        return `<span class="badge ${status}">${status}</span>${worker.attention?`<span class="sub">${esc(worker.attention)}</span>`:""}`;
+      }
+
+      function tableView(workers) {
+        if (!workers.length) return emptyMessage();
+        return `<div class="tablewrap"><table><thead><tr><th>Worker</th><th>Lifecycle</th><th>Scenario state / activity</th><th>Waiting for</th><th>State age</th></tr></thead><tbody>${workers.map(worker=>`<tr class="${worker.attention||worker.status==='failed'?'attention':''}"><td><span class="name">${esc(worker.client)}</span><span class="sub">${worker.pid?'PID '+esc(worker.pid):''}${worker.local_port?' · port '+esc(worker.local_port):''}</span></td><td>${badge(worker)}</td><td><b>${esc(worker.scenario_state||'—')}</b><span class="sub">${esc(worker.activity||'')}</span></td><td>${esc(worker.waiting_for||'—')}</td><td class="timestamp">${age(worker)}</td></tr>`).join("")}</tbody></table></div>`;
+      }
+
+      function focusView(workers) {
+        if (!workers.length) return emptyMessage();
+        const ordered=[...workers].sort((a,b)=>Number(Boolean(b.attention||b.status==='failed'))-Number(Boolean(a.attention||a.status==='failed')));
+        return `<div class="attention-list">${ordered.map(worker=>`<article class="worker-card ${worker.attention||worker.status==='failed'?'attention':''}"><div><span class="name">${esc(worker.client)}</span><span class="sub">${worker.pid?'PID '+esc(worker.pid):''}${worker.local_port?' · port '+esc(worker.local_port):''}</span></div><div>${badge(worker)}</div><div><b>${esc(worker.scenario_state||'—')}</b><span class="sub">${esc(worker.activity||'')}${worker.waiting_for?` · Waiting for ${esc(worker.waiting_for)}`:''}</span></div><div class="timestamp">${age(worker)}<span class="sub">in state</span></div></article>`).join("")}</div>`;
+      }
+
+      function lanesView(workers) {
+        if (!workers.length) return emptyMessage();
+        return `<div class="lanes">${workers.map(worker=>{const states=worker.state_history?.length?worker.state_history:[worker.scenario_state||"—"];return `<section class="lane"><div class="lane-title"><span class="name">${esc(worker.client)}</span><span class="sub">${badge(worker)}</span></div><div class="lane-content">${states.map((state,index)=>`${index?'<span class="state-arrow">→</span>':''}<span class="state-step ${index===states.length-1?(worker.attention||worker.status==='failed'?'attention':'current'):'past'}">${esc(state)}</span>`).join("")}<span class="sub timestamp">${age(worker)} in current state</span></div></section>`}).join("")}</div>`;
+      }
+
+      function emptyMessage() {
+        return '<div class="empty">The dashboard is ready. Start a scenario with <code>wxcalls workers run --dashboard …</code>.</div>';
+      }
+
+      function renderView() {
+        document.querySelectorAll("[data-view]").forEach(button=>button.setAttribute("aria-pressed",String(button.dataset.view===current)));
+        document.querySelector("#variant-label").textContent=`${names[current]} · ${views.indexOf(current)+1}/3`;
+        document.querySelector("#panel-title").textContent=titles[current];
+        document.querySelector("#view-hint").textContent=hints[current];
+        const renderer={table:tableView,focus:focusView,lanes:lanesView}[current];
+        document.querySelector("#view-content").innerHTML=renderer(latestWorkers);
+      }
+
+      function setView(view, updateUrl=true) {
+        if(!views.includes(view)) view="table";
+        current=view;
+        if(updateUrl) history.replaceState(null,"",`${location.pathname}?variant=${view}`);
+        renderView();
+      }
+
+      function cycle(step) { const index=views.indexOf(current); setView(views[(index+step+views.length)%views.length]); }
+      document.querySelectorAll("[data-view]").forEach(button=>button.addEventListener("click",()=>setView(button.dataset.view)));
+      document.querySelector("#prev").addEventListener("click",()=>cycle(-1));
+      document.querySelector("#next").addEventListener("click",()=>cycle(1));
+      document.addEventListener("keydown",event=>{if(event.target.isContentEditable)return;if(event.key==="ArrowLeft")cycle(-1);if(event.key==="ArrowRight")cycle(1)});
+
+      async function refresh() {
+        try {
+          const response=await fetch("/api/state",{cache:"no-store"});
+          if(!response.ok) throw new Error("Dashboard state unavailable");
+          const data=await response.json();
+          const workers=data.workers||[];
+          document.querySelector("#connection").textContent="Live";
+          document.querySelector("#scenario").textContent=data.scenario||"No scenario active";
+          document.querySelector("#scenario-meta").textContent=data.status||"Waiting for run";
+          document.querySelector("#updated").textContent=`Updated ${new Date().toLocaleTimeString()}`;
+          document.querySelector("#count").textContent=workers.length;
+          document.querySelector("#running").textContent=workers.filter(worker=>["running","waiting","starting"].includes(worker.status)).length;
+          document.querySelector("#completed").textContent=workers.filter(worker=>worker.status==="completed").length;
+          document.querySelector("#attention").textContent=workers.filter(worker=>worker.status==="failed"||worker.attention).length;
+          latestWorkers=workers;
+          renderView();
+        } catch {
+          document.querySelector("#connection").textContent="Reconnecting";
+        }
+      }
+
+      setView(current,false);
+      setInterval(refresh,1000);
+      refresh();
+    </script>
+  </body>
+</html>

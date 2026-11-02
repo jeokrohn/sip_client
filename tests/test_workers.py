@@ -214,6 +214,12 @@ def test_workers_cli_parses_experimental_run_options() -> None:
     assert args.env_file == "test.env"
     assert args.scenarios == ["scenario.yml"]
 
+    dashboard_args = _build_parser().parse_args(
+        ["workers", "run", "-c", "config.yml", "--dashboard", "--dashboard-port", "9001", "scenario.yml"]
+    )
+    assert dashboard_args.dashboard is True
+    assert dashboard_args.dashboard_port == 9001
+
     existing_args = _build_parser().parse_args(["run", "-c", "config.yml", "--backend", "fake", "scenario.yml"])
     assert existing_args.command == "run"
     assert existing_args.backend == "fake"
@@ -303,7 +309,7 @@ def test_worker_protocol_routes_command_response_and_reports_crash(tmp_path: Pat
         await worker.reader_task
         with pytest.raises(BackendError, match="Worker alice exited unexpectedly with code 17"):
             await backend.wait_for_failure()
-        assert events[0] == (
+        assert (
             "call_update",
             {
                 "call_id": "call-1",
@@ -311,8 +317,8 @@ def test_worker_protocol_routes_command_response_and_reports_crash(tmp_path: Pat
                 "media_active": True,
                 "video_active": False,
             },
-        )
-        assert events[1] == (
+        ) in events
+        assert (
             "worker_failed",
             {
                 "client": "alice",
@@ -322,7 +328,7 @@ def test_worker_protocol_routes_command_response_and_reports_crash(tmp_path: Pat
                 "last_state": "crash:in_progress",
                 "pjsip_log": str(tmp_path / "pjsip.log"),
             },
-        )
+        ) in events
 
     asyncio.run(exercise())
 

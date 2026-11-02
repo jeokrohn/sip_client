@@ -7,8 +7,10 @@ import asyncio
 import sys
 from pathlib import Path
 
+from wxcalls.dashboard import WorkerDashboard
 from wxcalls.orchestrator import lab_from_config
 from wxcalls.preflight import has_failures, run_preflight
+from wxcalls.workers.backend import WorkerSipBackend
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -76,6 +78,11 @@ def _cmd_workers_run(args: argparse.Namespace) -> int:
     :returns: Process exit code.
     """
 
+    dashboard = WorkerDashboard(port=args.dashboard_port) if args.dashboard else None
+    if dashboard is not None:
+        dashboard.start()
+        print(f"[wxcalls] worker dashboard: http://{dashboard.host}:{dashboard.port}", flush=True)
+
     async def run() -> None:
         """Execute scenarios with one worker lifecycle per scenario.
 
@@ -88,10 +95,16 @@ def _cmd_workers_run(args: argparse.Namespace) -> int:
             backend_name="workers",
             progress_reporter=_print_progress,
         ) as lab:
+            if dashboard is not None and isinstance(lab.backend, WorkerSipBackend):
+                lab.backend.dashboard_sink = dashboard.publish
             for scenario in args.scenarios:
                 await lab.run_scenario_path(scenario)
 
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    finally:
+        if dashboard is not None:
+            dashboard.close()
     return 0
 
 
@@ -119,6 +132,8 @@ def _build_parser() -> argparse.ArgumentParser:
     worker_run = worker_commands.add_parser("run", help="run scenario YAML files with endpoint workers")
     worker_run.add_argument("-c", "--config", required=True, help="framework YAML config path")
     worker_run.add_argument("--env-file", default=".env", help="local env file path")
+    worker_run.add_argument("--dashboard", action="store_true", help="serve the live worker dashboard on localhost")
+    worker_run.add_argument("--dashboard-port", type=int, default=8765, help="dashboard port (default: 8765)")
     worker_run.add_argument("scenarios", nargs="+", help="scenario YAML files")
 
     return parser

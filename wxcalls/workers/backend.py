@@ -146,6 +146,19 @@ class _Worker:
         request_id = uuid4().hex
         self.last_action = action
         self.last_state = f"{action}:in_progress"
+        self.event_callback(
+            "worker_action",
+            {
+                "client": self.client.name,
+                "action": action,
+                "phase": "started",
+                "last_state": self.last_state,
+                "wait_limit": next(
+                    (payload[key] for key in ("operation_timeout", "timeout_seconds", "timeout") if key in payload),
+                    None,
+                ),
+            },
+        )
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self.pending[request_id] = future
         message = json.dumps({"id": request_id, "action": action, **payload}, separators=(",", ":")) + "\n"
@@ -158,6 +171,10 @@ class _Worker:
             self.pending.pop(request_id, None)
         if not response.get("ok"):
             self.last_state = f"{action}:failed"
+            self.event_callback(
+                "worker_action",
+                {"client": self.client.name, "action": action, "phase": "failed", "last_state": self.last_state},
+            )
             error = _redact_sensitive_text(str(response.get("error", "unknown error")), self.secret_values)
             message = f"Worker {self.client.name} failed {action}: {error}"
             error_types: dict[str, type[Exception]] = {
@@ -170,6 +187,10 @@ class _Worker:
             exception_type = error_types.get(str(response.get("error_type", "")), BackendError)
             raise exception_type(message)
         self.last_state = f"{action}:completed"
+        self.event_callback(
+            "worker_action",
+            {"client": self.client.name, "action": action, "phase": "completed", "last_state": self.last_state},
+        )
         return response.get("result")
 
     async def stop(self) -> None:
@@ -234,6 +255,7 @@ class WorkerSipBackend(SipBackend):
         self.events_path: Path | None = None
         self.call_handles: dict[str, CallHandle] = {}
         self.pending_call_updates: dict[str, dict[str, Any]] = {}
+        self.dashboard_sink: Callable[[str, dict[str, Any]], None] | None = None
 
     async def initialize(self, config: LabConfig, pjsip_log_path: Path | None = None) -> None:
         """Store run configuration; endpoint processes start at scenario boundaries.
@@ -588,6 +610,7 @@ class WorkerSipBackend(SipBackend):
             raise BackendError("Worker scenario directory has not been initialized")
         worker_dir = self._scenario_worker_root / _safe_name(client.name)
         worker_dir.mkdir(parents=True, exist_ok=True)
+        self._record("worker_starting", client=client.name)
         stderr_path = worker_dir / "stderr.log"
         pjsip_path = worker_dir / "pjsip.log"
         with stderr_path.open("w", encoding="utf-8") as stderr_file:
@@ -662,13 +685,24 @@ class WorkerSipBackend(SipBackend):
         :returns: None.
         """
 
-        if self.events_path is None:
-            return
-        self.events_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.events_path.open("a", encoding="utf-8") as output:
-            output.write(
-                json.dumps({"event": event, "ts": datetime.now(tz=UTC).isoformat(), **fields}, default=str) + "\n"
-            )
+        record = {"event": event, "ts": datetime.now(tz=UTC).isoformat(), **fields}
+        if self.events_path is not None:
+            self.events_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.events_path.open("a", encoding="utf-8") as output:
+                output.write(json.dumps(record, default=str) + "\n")
+        if self.dashboard_sink is not None:
+            self.dashboard_sink(event, fields)
+
+    def publish_dashboard_event(self, event: str, **fields: Any) -> None:
+        """Forward scenario-level state to the optional live dashboard.
+
+        :param event: Dashboard event name.
+        :param fields: Scenario state details.
+        :returns: None.
+        """
+
+        if self.dashboard_sink is not None:
+            self.dashboard_sink(event, fields)
 
     def _worker_event(self, event: str, fields: dict[str, Any]) -> None:
         """Record worker events and publish unexpected process exits.
