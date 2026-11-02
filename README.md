@@ -91,6 +91,23 @@ Run YAML scenario through the CLI:
 wxcalls run -c config.local.yml scenarios/call-behaviors.yml
 ```
 
+For an experimental process-per-endpoint run, use the separate worker command:
+
+```bash
+wxcalls workers run -c config.local.yml scenarios/call-behaviors.yml
+```
+
+The worker runner starts one PJSUA2 process for each client referenced by a scenario. Each process owns one
+endpoint, account, and signaling transport on its own local port. Workers start before scenario execution and
+register only when scenario actions request it; they stop at the end of each scenario. Credentials travel through
+the worker's private stdin protocol, and worker logs redact SIP authorization headers and configured credential
+values. Per-scenario worker logs are stored under `logs/workers/` and controller events in `logs/workers.jsonl`,
+inside the normal run artifacts directory.
+
+This command is experimental and PJSUA2-only. A worker crash fails the scenario and causes the controller to stop
+the other workers. If a worker is killed abruptly, its remote registration may remain until it expires. The regular
+`wxcalls run` command and pytest backend selection continue to use the existing single-process architecture.
+
 ## Call scenarios
 
 Use `wait_state` to assert call signaling state and `wait_media` to assert that audio media is active before playback:

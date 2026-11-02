@@ -24,6 +24,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_preflight(args)
     if args.command == "run":
         return _cmd_run(args)
+    if args.command == "workers" and args.worker_command == "run":
+        return _cmd_workers_run(args)
     parser.print_help()
     return 2
 
@@ -67,6 +69,32 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_workers_run(args: argparse.Namespace) -> int:
+    """Run scenarios through the experimental process-per-endpoint backend.
+
+    :param args: Parsed worker-run arguments.
+    :returns: Process exit code.
+    """
+
+    async def run() -> None:
+        """Execute scenarios with one worker lifecycle per scenario.
+
+        :returns: None.
+        """
+
+        async with lab_from_config(
+            config_path=args.config,
+            env_file=args.env_file,
+            backend_name="workers",
+            progress_reporter=_print_progress,
+        ) as lab:
+            for scenario in args.scenarios:
+                await lab.run_scenario_path(scenario)
+
+    asyncio.run(run())
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """Build the top-level command parser.
 
@@ -85,6 +113,13 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--env-file", default=".env", help="local env file path")
     run.add_argument("--backend", choices=["fake", "pjsua2"], default="pjsua2", help="backend to use")
     run.add_argument("scenarios", nargs="+", help="scenario YAML files")
+
+    workers = subparsers.add_parser("workers", help="experimental subprocess-per-endpoint runner")
+    worker_commands = workers.add_subparsers(dest="worker_command")
+    worker_run = worker_commands.add_parser("run", help="run scenario YAML files with endpoint workers")
+    worker_run.add_argument("-c", "--config", required=True, help="framework YAML config path")
+    worker_run.add_argument("--env-file", default=".env", help="local env file path")
+    worker_run.add_argument("scenarios", nargs="+", help="scenario YAML files")
 
     return parser
 

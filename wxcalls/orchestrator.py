@@ -184,16 +184,54 @@ class CallLab:
         :returns: None.
         """
 
-        if scenario.endpoints:
-            runtime = BehaviorRuntime(self, scenario)
-            previous_runtime = self._behavior_runtime
-            self._behavior_runtime = runtime
-            try:
-                await runtime.run_scenario(lambda: self._run_scenario_steps(scenario))
-            finally:
-                self._behavior_runtime = previous_runtime
-            return
-        await self._run_scenario_steps(scenario)
+        begin_scenario = getattr(self.backend, "begin_scenario", None)
+        end_scenario = getattr(self.backend, "end_scenario", None)
+        wait_for_failure = getattr(self.backend, "wait_for_failure", None)
+        if callable(begin_scenario):
+            await begin_scenario(scenario)
+
+        async def execute_scenario() -> None:
+            """Run behavior policies and scripted steps for this scenario.
+
+            :returns: None.
+            """
+
+            if scenario.endpoints:
+                runtime = BehaviorRuntime(self, scenario)
+                previous_runtime = self._behavior_runtime
+                self._behavior_runtime = runtime
+                try:
+                    await runtime.run_scenario(lambda: self._run_scenario_steps(scenario))
+                finally:
+                    self._behavior_runtime = previous_runtime
+                return
+            await self._run_scenario_steps(scenario)
+
+        scenario_task: asyncio.Task[None] | None = None
+        failure_task: asyncio.Task[None] | None = None
+        try:
+            if callable(wait_for_failure):
+                scenario_task = asyncio.create_task(execute_scenario())
+                failure_task = asyncio.create_task(wait_for_failure())
+                done, _ = await asyncio.wait(
+                    {scenario_task, failure_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if failure_task in done:
+                    await failure_task
+                await scenario_task
+            else:
+                await execute_scenario()
+        finally:
+            scenario_tasks = [task for task in (scenario_task, failure_task) if task is not None]
+            for task in scenario_tasks:
+                if task.done():
+                    continue
+                task.cancel()
+            if scenario_tasks:
+                await asyncio.gather(*scenario_tasks, return_exceptions=True)
+            if callable(end_scenario):
+                await end_scenario(scenario)
 
     async def _run_scenario_steps(self, scenario: Scenario) -> None:
         """Run the explicit step sequence for a parsed scenario.
@@ -850,7 +888,7 @@ class CallLab:
 def make_backend(name: str) -> SipBackend:
     """Create a backend by name.
 
-    :param name: Backend name, either ``fake`` or ``pjsua2``.
+    :param name: Backend name, either ``fake``, ``pjsua2``, or ``workers``.
     :returns: Backend instance.
     :raises ScenarioError: If the backend is unknown.
     """
@@ -860,6 +898,10 @@ def make_backend(name: str) -> SipBackend:
         return FakeSipBackend()
     if normalized == "pjsua2":
         return Pjsua2SipBackend()
+    if normalized == "workers":
+        from wxcalls.workers.backend import WorkerSipBackend
+
+        return WorkerSipBackend()
     raise ScenarioError(f"Unsupported backend: {name}")
 
 
