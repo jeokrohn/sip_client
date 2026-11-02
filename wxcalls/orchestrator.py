@@ -673,14 +673,9 @@ class CallLab:
             await self.backend.play_wav(playback_call, asset.path)
             if post_roll:
                 await asyncio.sleep(post_roll)
-            if explicit_seconds is None and not record_task.done():
-                await asyncio.sleep(0)
-            if explicit_seconds is None and not record_task.done():
-                record_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await record_task
-            else:
-                await record_task
+            # Worker-backed recording runs in a child process, so cancelling
+            # its controller request would leave the recorder writing this file.
+            await record_task
         except Exception:
             if record_task.done():
                 with suppress(Exception, asyncio.CancelledError):

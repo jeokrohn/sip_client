@@ -129,11 +129,11 @@ class _Worker:
                 future.set_exception(BackendError(message))
         self.pending.clear()
 
-    async def request(self, action: str, timeout: float = 120, **payload: Any) -> Any:
+    async def request(self, action: str, request_timeout: float = 120, **payload: Any) -> Any:
         """Send an operation and await its correlated response.
 
         :param action: Backend method name.
-        :param timeout: Maximum wait in seconds.
+        :param request_timeout: Maximum wait for the worker response in seconds.
         :param payload: JSON-serializable operation arguments.
         :returns: Decoded operation result.
         :raises BackendError: If the worker exits or rejects the operation.
@@ -153,7 +153,7 @@ class _Worker:
             async with self.write_lock:
                 self.process.stdin.write(message.encode())
                 await self.process.stdin.drain()
-            response = await asyncio.wait_for(future, timeout=timeout)
+            response = await asyncio.wait_for(future, timeout=request_timeout)
         finally:
             self.pending.pop(request_id, None)
         if not response.get("ok"):
@@ -343,7 +343,7 @@ class WorkerSipBackend(SipBackend):
         """
 
         result = await self._worker(client.name).request(
-            "register_client", timeout=timeout + 15, timeout_seconds=timeout
+            "register_client", request_timeout=timeout + 15, timeout_seconds=timeout
         )
         return RegistrationResult(
             client_name=str(result["client_name"]),
@@ -369,7 +369,7 @@ class WorkerSipBackend(SipBackend):
 
         raw = await self._worker(client_name).request(
             "stay_registered",
-            timeout=seconds + 15,
+            request_timeout=seconds + 15,
             seconds=seconds,
             require_reregistration=require_reregistration,
             min_reregistrations=min_reregistrations,
@@ -403,6 +403,7 @@ class WorkerSipBackend(SipBackend):
 
         raw = await self._worker(client_name).request(
             "place_call",
+            request_timeout=timeout + 10,
             target_uri=target_uri,
             timeout=timeout,
             video=video,
@@ -427,7 +428,7 @@ class WorkerSipBackend(SipBackend):
 
         raw = await self._worker(client_name).request(
             "wait_for_incoming",
-            timeout=timeout + 10,
+            request_timeout=timeout + 10,
             operation_timeout=timeout,
             from_uri=from_uri,
         )
@@ -462,7 +463,7 @@ class WorkerSipBackend(SipBackend):
         :returns: None.
         """
 
-        await self._call_request("wait_call_state", call, state=state, timeout=timeout, request_timeout=timeout + 10)
+        await self._call_request("wait_call_state", call, state=state, timeout=timeout, worker_timeout=timeout + 10)
 
     async def hangup(self, call: CallHandle) -> None:
         """Hang up a call.
@@ -546,25 +547,25 @@ class WorkerSipBackend(SipBackend):
 
         raw = await self._worker(client_name).request(
             "video_smoke",
-            timeout=timeout + 45,
+            request_timeout=timeout + 45,
             target_uri=target_uri,
             operation_timeout=timeout,
         )
         return VideoSmokeResult(bool(raw["supported"]), bool(raw["skipped"]), str(raw["evidence"]))
 
-    async def _call_request(self, action: str, call: CallHandle, request_timeout: float = 120, **payload: Any) -> None:
+    async def _call_request(self, action: str, call: CallHandle, worker_timeout: float = 120, **payload: Any) -> None:
         """Route an operation to the worker owning a call handle.
 
         :param action: Worker operation name.
         :param call: Call handle identifying its owner.
-        :param request_timeout: Worker response deadline.
+        :param worker_timeout: Worker response deadline, separate from operation payload fields.
         :param payload: Additional operation fields.
         :returns: None.
         """
 
         await self._worker(call.client_name).request(
             action,
-            timeout=request_timeout,
+            request_timeout=worker_timeout,
             call=asdict(call),
             **payload,
         )
