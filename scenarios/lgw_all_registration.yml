@@ -1,0 +1,20 @@
+# register all LGWs
+name: lgw-all-registration
+steps:
+  - action: register
+    client: [
+      lgw_Amsterdam, lgw_Berlin, lgw_Chicago, lgw_DFW_trunk_A, lgw_DFW_trunk_B, lgw_Darmstadt, lgw_Frisco, lgw_HQ_PSTN,
+      # lgw_Hartford,
+      # lgw_Hartford_01,
+      lgw_Hartford_Primary, lgw_Hartford_Secondary,
+      # lgw_Joburg,
+      lgw_London,
+      # lgw_Riyadh,
+      lgw_SJC,
+      # lgw_SJC_01,
+      # lgw_SJC_02,
+      # lgw_Santiago_de_Chile, lgw_Sao_Paulo,
+      # lgw_trunk1
+    ]
+    timeout: 30
+    stay_registered: true

@@ -1,0 +1,138 @@
+name: lgw-darmstadt-to-chicago-call-18725550103
+
+# Register both endpoints and have the Darmstadt endpoint call a DN of a WxC in Chicago that is forwarded to the
+# PSTN (Chicago trunk) The Chicago endpoint (trunk) answers after 3 seconds, and the call is hung up by the originator
+# after 10 seconds.
+behaviors:
+  lgw_caller:
+    initial_state: unregistered
+    states:
+      unregistered:
+        entry:
+          - action: register
+        on:
+          registered:
+            next_state: idle
+
+      idle:
+        on:
+          scenario_trigger:
+            name: start_call
+            next_state: calling
+
+      calling:
+        entry:
+          - action: call
+            # The runner derives the SIP URI from the LGW registrar settings.
+            target: "+18725550103"
+            # Uncomment and replace with the numeric calling line identity.
+            caller_id: "+12215550123"
+            # Optional PAI-only override; defaults to caller_id when provided.
+            pai_caller_id: "+12215550123"
+            save_as: outbound
+        on:
+          call_state:
+            call: outbound
+            state: connected
+            next_state: connected
+
+      connected:
+        entry:
+          - action: start_timer
+            name: hangup_delay
+            seconds: 10
+        on:
+          timer_expired:
+            timer: hangup_delay
+            actions:
+              - action: hangup
+                call: outbound
+          call_state:
+            call: outbound
+            state: disconnected
+            next_state: done
+
+      done:
+        entry:
+          - action: cancel_timer
+            name: hangup_delay
+
+  lgw_chicago_callee:
+    initial_state: unregistered
+    states:
+      unregistered:
+        entry:
+          - action: register
+        on:
+          registered:
+            next_state: idle
+
+      idle:
+        on:
+          call_received:
+            save_call_as: inbound
+            next_state: ringing
+
+      ringing:
+        entry:
+          - action: start_timer
+            name: answer_delay
+            seconds: 3
+        on:
+          timer_expired:
+            timer: answer_delay
+            actions:
+              - action: answer
+                call: inbound
+            next_state: answering
+
+      answering:
+        on:
+          call_state:
+            call: inbound
+            state: connected
+            next_state: connected
+
+      connected:
+        on:
+          call_state:
+            call: inbound
+            state: disconnected
+            next_state: done
+      done:
+        entry:
+          - action: cancel_timer
+            name: answer_delay
+
+endpoints:
+  lgw_darmstadt:
+    client: lgw_darmstadt
+    behavior: lgw_caller
+  lgw_Chicago:
+    client: lgw_Chicago
+    behavior: lgw_chicago_callee
+
+steps:
+  - action: wait_behavior_state
+    endpoint: lgw_darmstadt
+    state: idle
+    timeout: 30
+
+  - action: wait_behavior_state
+    endpoint: lgw_Chicago
+    state: idle
+    timeout: 30
+
+  - action: trigger_behavior
+    endpoint: lgw_darmstadt
+    name: start_call
+
+  - action: wait_behavior_state
+    endpoint: lgw_darmstadt
+    state: done
+    timeout: 120
+
+  - action: wait_behavior_state
+    endpoint: lgw_Chicago
+    state: done
+    timeout: 120

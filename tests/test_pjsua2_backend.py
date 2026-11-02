@@ -13,6 +13,7 @@ from wxcalls.backends.base import CallHandle, RegistrationResult
 from wxcalls.backends.pjsua2 import (
     Pjsua2SipBackend,
     _configure_srtp,
+    _create_endpoint_adapter,
     _disable_audio_codecs,
     _is_active_media_status,
     _local_gateway_caller_uri,
@@ -20,6 +21,7 @@ from wxcalls.backends.pjsua2 import (
     _reroute_audio_players,
     _reroute_audio_recorders,
     _set_call_media_counts,
+    _sip_request_uri_parameter,
     _validate_secure_signaling_for_mandatory_srtp,
 )
 from wxcalls.config import SipClientConfig, SipCredentials
@@ -43,10 +45,70 @@ def test_local_gateway_caller_uri_keeps_otg_inside_bracketed_uri() -> None:
         registrar_domain="registrar.example.invalid",
         trunk_group="trunk",
     )
-
     assert _local_gateway_caller_uri(client, "+442074037970") == (
         "<sip:+442074037970@registrar.example.invalid;otg=trunk>"
     )
+
+
+def test_incoming_lgw_account_selection_uses_request_uri_dtg() -> None:
+    """Route a Webex incoming request to the account named by its DTG.
+
+    :returns: None.
+    """
+
+    class FakeEndpoint:
+        """Provide a PJSUA2 endpoint base for callback routing tests."""
+
+    backend = Pjsua2SipBackend()
+    backend.config = SimpleNamespace(
+        clients=(
+            SipClientConfig(
+                name="darmstadt",
+                id_uri="sip:darmstadt@registrar.example.invalid;otg=darmstadt-dtg",
+                registrar_uri="sip:registrar.example.invalid",
+                username_env="DARMSTADT_USER",
+                password_env="DARMSTADT_PASSWORD",
+                kind="local_gateway",
+                trunk_group="darmstadt-dtg",
+            ),
+            SipClientConfig(
+                name="chicago",
+                id_uri="sip:chicago@registrar.example.invalid;otg=chicago-dtg",
+                registrar_uri="sip:registrar.example.invalid",
+                username_env="CHICAGO_USER",
+                password_env="CHICAGO_PASSWORD",
+                kind="local_gateway",
+                trunk_group="chicago-dtg",
+            ),
+        ),
+    )
+    backend.account_ids = {"darmstadt": 0, "chicago": 1}
+    endpoint = _create_endpoint_adapter(SimpleNamespace(Endpoint=FakeEndpoint), backend)
+    selection = SimpleNamespace(
+        accountIndex=0,
+        rdata=SimpleNamespace(
+            wholeMsg=(
+                "INVITE sip:+19195550155@10.0.0.1;transport=tls;ob;dtg=chicago-dtg SIP/2.0\r\n"
+                "To: <sip:+19195550155@registrar.example.invalid>\r\n\r\n"
+            )
+        ),
+    )
+
+    endpoint.onSelectAccount(selection)
+
+    assert selection.accountIndex == 1
+    assert (
+        _sip_request_uri_parameter(
+            "INVITE sip:user@example.invalid;transport=tls;dtg=trunk-1 SIP/2.0\r\nTo: sip:other@example.invalid",
+            "DTG",
+        )
+        == "trunk-1"
+    )
+    assert _sip_request_uri_parameter("INVITE sip:user@example.invalid SIP/2.0\r\n", "dtg") is None
+    selection.accountIndex = 0
+    selection.rdata.wholeMsg = "INVITE sip:user@example.invalid;dtg=unconfigured SIP/2.0\r\n"
+    endpoint.onSelectAccount(selection)
+    assert selection.accountIndex == 0
 
 
 class FakePj:
@@ -179,6 +241,14 @@ def test_register_local_gateway_configures_identity_auth_proxy_and_refresh(
             """
 
             captured["account_config"] = account_config
+
+        def getId(self) -> int:  # noqa: N802 - PJSUA2 API name
+            """Return the simulated PJSUA2 account index.
+
+            :returns: Account index.
+            """
+
+            return 0
 
         async def wait_registered(self, timeout: float) -> RegistrationResult:
             """Return a simulated successful registration result.

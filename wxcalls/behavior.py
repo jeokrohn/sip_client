@@ -59,6 +59,7 @@ class EndpointRuntime:
     :param timers: Active timer tasks by timer name.
     :param counters: Integer behavior counters by counter name.
     :param state_changed: Condition notified whenever the behavior state changes.
+    :param unhandled_disconnect: Call reference for a disconnect without a matching behavior rule.
     """
 
     endpoint: EndpointBehavior
@@ -71,6 +72,7 @@ class EndpointRuntime:
     timers: dict[str, asyncio.Task[None]] = field(default_factory=dict)
     counters: dict[str, int] = field(default_factory=dict)
     state_changed: asyncio.Condition = field(default_factory=asyncio.Condition)
+    unhandled_disconnect: str | None = None
 
 
 class BehaviorRuntime:
@@ -120,6 +122,7 @@ class BehaviorRuntime:
         :param timeout: Maximum wait in seconds.
         :returns: None.
         :raises ScenarioError: If the endpoint or state is unknown.
+        :raises ScenarioError: If a behavior-owned call disconnects without a matching rule.
         :raises WxTimeoutError: If the state is not reached before timeout.
         """
 
@@ -131,9 +134,17 @@ class BehaviorRuntime:
         try:
             async with asyncio.timeout(timeout):
                 async with runtime.state_changed:
-                    await runtime.state_changed.wait_for(lambda: runtime.state == state)
+                    await runtime.state_changed.wait_for(
+                        lambda: runtime.state == state or runtime.unhandled_disconnect is not None
+                    )
         except TimeoutError as exc:
             raise WxTimeoutError(f"Timed out waiting for endpoint {endpoint} to reach behavior state {state}") from exc
+        if runtime.state != state:
+            call_ref = runtime.unhandled_disconnect or "unknown call"
+            raise ScenarioError(
+                f"Call {call_ref} disconnected while endpoint {endpoint!r} was in behavior state "
+                f"{runtime.state!r}; no rule handled the disconnect while waiting for state {state!r}"
+            )
 
     async def emit_trigger(self, endpoint: str, name: str) -> None:
         """Emit a scenario trigger into one endpoint behavior.
@@ -400,6 +411,10 @@ class BehaviorRuntime:
         self._record_behavior_event(runtime, event)
         rule = self._matching_rule(runtime, event)
         if rule is None:
+            if event.name == "call_state" and event.state == "disconnected" and event.call_ref in runtime.call_refs:
+                runtime.unhandled_disconnect = event.call_ref
+                async with runtime.state_changed:
+                    runtime.state_changed.notify_all()
             return
         self._progress_rule(runtime, event, rule)
         if event.name == "call_received" and event.call is not None and rule.save_call_as is not None:

@@ -19,11 +19,16 @@ redistributing builds that include or require these bindings.
 
         git clone https://github.com/pjsip/pjproject.git
         cd pjproject
+        printf '#define PJSUA_MAX_ACC 32\n' > pjlib/include/pj/config_site.h
         ./configure CFLAGS="-fPIC" --with-ssl="$(brew --prefix openssl@3)"
         make dep
         make
    To resolve (version) issues with `ffmpeg` configure with `--disable-ffmpeg`
 
+   PJSUA defaults to eight accounts. Set `PJSUA_MAX_ACC` in `config_site.h` before building when a run needs
+   more accounts; the value must be at least the number of clients registered in one endpoint. Rebuild both
+   pjproject and the PJSUA2 Python bindings after changing it, since the limit is compiled into the native
+   libraries.
 
 4. Build/install the Python SWIG module into the same Python env used by this project:
 
@@ -31,6 +36,7 @@ redistributing builds that include or require these bindings.
         uv pip install --python .venv/bin/python setuptools wheel
         
         cd pjproject/pjsip-apps/src/swig/python
+        make distclean
         make PYTHON_EXE=<project directory where we need the PJSIPUA2 package>/.venv/bin/python
         <project directory where we need the PJSIPUA2 package>.venv/bin/python setup.py install
 
@@ -41,15 +47,18 @@ redistributing builds that include or require these bindings.
           make PYTHON_EXE=~/Documents/workspace/sip_client/.venv/bin/python
           ~/Documents/workspace/sip_client/.venv/bin/python setup.py install
 
-   Add `--force` to the `setup.py install` command if you need to overwrite an existing installation.
+   After changing `PJSUA_MAX_ACC` or rebuilding pjproject, run `make distclean` before building the bindings so
+   the extension is relinked against the new static libraries. Add `--force` to the `setup.py install` command to
+   overwrite an existing installation.
 
 Alternative: install with uv
 
       cd ~/Documents/workspace/pjproject/pjsip-apps/src/swig/python   
-      make PYTHON_EXE=/Users/jkrohn/Library/CloudStorage/Dropbox/ln/workspace/sip_client/.venv/bin/python
+      make distclean
+      make wheel PYTHON_EXE=/Users/jkrohn/Library/CloudStorage/Dropbox/ln/workspace/sip_client/.venv/bin/python
 
       cd /Users/jkrohn/Library/CloudStorage/Dropbox/ln/workspace/sip_client
-      uv pip install /Users/jkrohn/Documents/workspace/pjproject/pjsip-apps/src/swig/python/dist/pjsua2-2.17.dev0-cp313-cp313-macosx_11_0_arm64.whl 
+      uv pip install --reinstall /Users/jkrohn/Documents/workspace/pjproject/pjsip-apps/src/swig/python/dist/pjsua2-2.17.dev0-cp313-cp313-macosx_11_0_arm64.whl
 
 5. Verify the installation
 

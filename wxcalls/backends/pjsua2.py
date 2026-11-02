@@ -50,6 +50,7 @@ class Pjsua2SipBackend:
         self.poll_task: asyncio.Task[None] | None = None
         self.transport_ids: dict[str, int] = {}
         self.accounts: dict[str, Any] = {}
+        self.account_ids: dict[str, int] = {}
         self.calls: dict[str, Any] = {}
         self.call_handles: dict[str, CallHandle] = {}
         self.lgw_rewrite_handles: tuple[Any, Any] | None = None
@@ -74,7 +75,7 @@ class Pjsua2SipBackend:
         self.pj = pj
         self.config = config
         self.loop = asyncio.get_running_loop()
-        self.endpoint = pj.Endpoint()
+        self.endpoint = _create_endpoint_adapter(pj, self)
         self.endpoint.libCreate()
 
         # PJSUA2 callbacks are driven from the asyncio loop by explicit polling
@@ -135,6 +136,7 @@ class Pjsua2SipBackend:
         self.calls.clear()
         self.call_handles.clear()
         self.accounts.clear()
+        self.account_ids.clear()
         self.transport_ids.clear()
         if self.endpoint is not None:
             self.endpoint.libDestroy()
@@ -195,6 +197,7 @@ class Pjsua2SipBackend:
         account = _create_account_adapter(self, client.name)
         account.create(acc_cfg)
         self.accounts[client.name] = account
+        self.account_ids[client.name] = int(account.getId())
         return await account.wait_registered(timeout)
 
     async def stay_registered(
@@ -602,6 +605,25 @@ class Pjsua2SipBackend:
         self.call_handles[call_id] = handle
         return handle
 
+    def _account_id_for_incoming(self, message: str) -> int | None:
+        """Select a configured Local Gateway account from an incoming DTG.
+
+        :param message: Complete incoming SIP request from PJSUA2.
+        :returns: Matching account ID, or ``None`` when no unique DTG match exists.
+        """
+
+        dtg = _sip_request_uri_parameter(message, "dtg")
+        if dtg is None or self.config is None:
+            return None
+        matches = [
+            client
+            for client in self.config.clients
+            if client.is_local_gateway and client.trunk_group and client.trunk_group.casefold() == dtg.casefold()
+        ]
+        if len(matches) != 1:
+            return None
+        return self.account_ids.get(matches[0].name)
+
     def _try_set_null_audio_device(self) -> None:
         """Prefer PJSUA2's null audio device when the binding supports it.
 
@@ -759,6 +781,52 @@ def _local_gateway_caller_uri(client: SipClientConfig, caller_id: str) -> str:
     # Brackets keep OTG inside the SIP URI instead of letting it parse as a
     # generic From-header parameter after PJSIP appends the dialog tag.
     return f"<sip:{caller_id}@{client.registrar_domain};otg={client.trunk_group}>"
+
+
+def _create_endpoint_adapter(pj: Any, backend: Pjsua2SipBackend) -> Any:
+    """Create an endpoint that routes incoming LGW calls by DTG.
+
+    :param pj: Imported PJSUA2 module.
+    :param backend: Backend containing configured trunk accounts.
+    :returns: PJSUA2 endpoint adapter.
+    """
+
+    class EndpointAdapter(pj.Endpoint):  # type: ignore[name-defined,misc]
+        """Override PJSUA2's incoming-account selection callback."""
+
+        def onSelectAccount(self, prm: Any) -> None:  # noqa: N802 - PJSUA2 API name
+            """Select an account using the request URI's DTG parameter.
+
+            :param prm: PJSUA2 incoming-account selection parameters.
+            :returns: None.
+            """
+
+            account_id = backend._account_id_for_incoming(str(prm.rdata.wholeMsg))
+            if account_id is not None:
+                prm.accountIndex = account_id
+
+    return EndpointAdapter()
+
+
+def _sip_request_uri_parameter(message: str, parameter: str) -> str | None:
+    """Read a named URI parameter from a SIP request line.
+
+    :param message: Complete SIP message.
+    :param parameter: URI parameter name to find, case-insensitively.
+    :returns: Parameter value, or ``None`` if the request or parameter is absent.
+    """
+
+    lines = message.splitlines()
+    request_line = lines[0] if lines else ""
+    request_parts = request_line.split()
+    if len(request_parts) < 2:
+        return None
+    request_uri = request_parts[1].split("?", maxsplit=1)[0]
+    for item in request_uri.split(";")[1:]:
+        name, separator, value = item.partition("=")
+        if separator and name.casefold() == parameter.casefold():
+            return value
+    return None
 
 
 def _create_account_adapter(backend: Pjsua2SipBackend, client_name: str) -> Any:

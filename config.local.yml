@@ -40,6 +40,61 @@ clients:
     enable_video: false
   # Registration-based Local Gateway example. Copy your own Control Hub values
   # into a local config and keep the password in the referenced environment variable.
+  - name: lgw_Amsterdam
+    kind: local_gateway
+    registrar_domain: "90236926.us10.bcld.webex.com"
+    trunk_group: "amsterdam1793147183_lgu"
+    line_port: "Amsterdam2043612062_LGU@90236926.us10.bcld.webex.com"
+    outbound_proxy: "ams06.sipconnect-eun.bcld.webex.com"
+    username_env: WX_LGW_AMSTERDAM_AUTH_USER
+    password_env: WX_LGW_AUTH_PASSWORD
+    transport: tls
+
+
+  - name: lgw_Berlin
+    kind: local_gateway
+    registrar_domain: "90236926.us10.bcld.webex.com"
+    trunk_group: "berlin1432490546_lgu"
+    line_port: "Berlin1473869720_LGU@90236926.us10.bcld.webex.com"
+    outbound_proxy: "fr08.sipconnect-eun.bcld.webex.com"
+    username_env: WX_LGW_BERLIN_AUTH_USER
+    password_env: WX_LGW_AUTH_PASSWORD
+    transport: tls
+
+
+  - name: lgw_Chicago
+    kind: local_gateway
+    registrar_domain: "90236926.us10.bcld.webex.com"
+    trunk_group: "chicago1757_lgu"
+    line_port: "Chicago5316_LGU@90236926.us10.bcld.webex.com"
+    outbound_proxy: "jfk06.sipconnect-us.bcld.webex.com"
+    username_env: WX_LGW_CHICAGO_AUTH_USER
+    password_env: WX_LGW_AUTH_PASSWORD
+    transport: tls
+
+
+  - name: lgw_DFW_trunk_A
+    kind: local_gateway
+    registrar_domain: "90236926.us10.bcld.webex.com"
+    trunk_group: "dfw.trunk.a1706718122_lgu"
+    line_port: "DFW.trunk.A1440201573_LGU@90236926.us10.bcld.webex.com"
+    outbound_proxy: "dfw01.sipconnect-us.bcld.webex.com"
+    username_env: WX_LGW_DFW_TRUNK_A_AUTH_USER
+    password_env: WX_LGW_AUTH_PASSWORD
+    transport: tls
+
+
+  - name: lgw_DFW_trunk_B
+    kind: local_gateway
+    registrar_domain: "90236926.us10.bcld.webex.com"
+    trunk_group: "dfw.trunk.b1085890535_lgu"
+    line_port: "DFW.trunk.B1515333890_LGU@90236926.us10.bcld.webex.com"
+    outbound_proxy: "dfw01.sipconnect-us.bcld.webex.com"
+    username_env: WX_LGW_DFW_TRUNK_B_AUTH_USER
+    password_env: WX_LGW_AUTH_PASSWORD
+    transport: tls
+
+
   - name: lgw_darmstadt
     kind: local_gateway
     registrar_domain: "90236926.us10.bcld.webex.com"
@@ -47,7 +102,173 @@ clients:
     line_port: "Darmstadt1000654249_LGU@90236926.us10.bcld.webex.com"
     outbound_proxy: "fr07.sipconnect-eun.bcld.webex.com"
     username_env: WX_LGW_DARMSTADT_AUTH_USER
-    password_env: WX_LGW_DARMSTADT_AUTH_PASSWORD
+    password_env: WX_LGW_AUTH_PASSWORD
     transport: tls
+  
+
+  - name: lgw_Frisco
+    kind: local_gateway
+    registrar_domain: "90236926.us10.bcld.webex.com"
+    trunk_group: "frisco8400_lgu"
+    line_port: "Frisco9632_LGU@90236926.us10.bcld.webex.com"
+    outbound_proxy: "da12.sipconnect-us.bcld.webex.com"
+    username_env: WX_LGW_FRISCO_AUTH_USER
+    password_env: WX_LGW_AUTH_PASSWORD
+    transport: tls
+
+
+  - name: lgw_HQ_PSTN
+    kind: local_gateway
+    registrar_domain: "90236926.us10.bcld.webex.com"
+    trunk_group: "hq.pstn0874445968_lgu"
+    line_port: "HQ.PSTN1928186794_LGU@90236926.us10.bcld.webex.com"
+    outbound_proxy: "ch03.sipconnect-us.bcld.webex.com"
+    username_env: WX_LGW_HQ_PSTN_AUTH_USER
+    password_env: WX_LGW_AUTH_PASSWORD
+    transport: tls
+
+
+  - name: lgw_Hartford
+    kind: local_gateway
+    registrar_domain: "90236926.us10.bcld.webex.com"
+    trunk_group: "hartford1706970209_lgu"
+    line_port: "Hartford1607477683_LGU@90236926.us10.bcld.webex.com"
+    outbound_proxy: "jfk30.sipconnect-us.bcld.webex.com"
+    username_env: WX_LGW_HARTFORD_AUTH_USER
+    password_env: WX_LGW_AUTH_PASSWORD
+    transport: tls
+
+
+  - name: lgw_Hartford_01
+    kind: local_gateway
+    registrar_domain: "90236926.us10.bcld.webex.com"
+    trunk_group: "hartford.011235072813_lgu"
+    line_port: "Hartford.011978455199_LGU@90236926.us10.bcld.webex.com"
+    outbound_proxy: "ch03.sipconnect-us.bcld.webex.com"
+    username_env: WX_LGW_HARTFORD_01_AUTH_USER
+    password_env: WX_LGW_AUTH_PASSWORD
+    transport: tls
+
+
+  - name: lgw_Hartford_Primary
+    kind: local_gateway
+    registrar_domain: "90236926.us10.bcld.webex.com"
+    trunk_group: "hartford.primary5032_lgu"
+    line_port: "Hartford.Primary1096_LGU@90236926.us10.bcld.webex.com"
+    outbound_proxy: "ch03.sipconnect-us.bcld.webex.com"
+    username_env: WX_LGW_HARTFORD_PRIMARY_AUTH_USER
+    password_env: WX_LGW_AUTH_PASSWORD
+    transport: tls
+
+
+  - name: lgw_Hartford_Secondary
+    kind: local_gateway
+    registrar_domain: "90236926.us10.bcld.webex.com"
+    trunk_group: "hartford.secondary3331_lgu"
+    line_port: "Hartford.Secondary1335_LGU@90236926.us10.bcld.webex.com"
+    outbound_proxy: "ch03.sipconnect-us.bcld.webex.com"
+    username_env: WX_LGW_HARTFORD_SECONDARY_AUTH_USER
+    password_env: WX_LGW_AUTH_PASSWORD
+    transport: tls
+
+
+  - name: lgw_Joburg
+    kind: local_gateway
+    registrar_domain: "90236926.us10.bcld.webex.com"
+    trunk_group: "joburg0618231695_lgu"
+    line_port: "Joburg0588373172_LGU@90236926.us10.bcld.webex.com"
+    outbound_proxy: "rsa01.sipconnect.bcld.webex.com"
+    username_env: WX_LGW_JOBURG_AUTH_USER
+    password_env: WX_LGW_AUTH_PASSWORD
+    transport: tls
+
+
+  - name: lgw_London
+    kind: local_gateway
+    registrar_domain: "90236926.us10.bcld.webex.com"
+    trunk_group: "london0055734236_lgu"
+    line_port: "London0511354198_LGU@90236926.us10.bcld.webex.com"
+    outbound_proxy: "ams05.sipconnect-eun.bcld.webex.com"
+    username_env: WX_LGW_LONDON_AUTH_USER
+    password_env: WX_LGW_AUTH_PASSWORD
+    transport: tls
+
+
+  - name: lgw_Riyadh
+    kind: local_gateway
+    registrar_domain: "90236926.us10.bcld.webex.com"
+    trunk_group: "riyadh0526801825_lgu"
+    line_port: "Riyadh0103486958_LGU@90236926.us10.bcld.webex.com"
+    outbound_proxy: "dxb01.sipconnect.bcld.webex.com"
+    username_env: WX_LGW_RIYADH_AUTH_USER
+    password_env: WX_LGW_AUTH_PASSWORD
+    transport: tls
+
+
+  - name: lgw_SJC
+    kind: local_gateway
+    registrar_domain: "90236926.us10.bcld.webex.com"
+    trunk_group: "sjc.sandbox8288_lgu"
+    line_port: "SJC.sandbox2136_LGU@90236926.us10.bcld.webex.com"
+    outbound_proxy: "da03.sipconnect-us.bcld.webex.com"
+    username_env: WX_LGW_SJC_AUTH_USER
+    password_env: WX_LGW_AUTH_PASSWORD
+    transport: tls
+
+
+  - name: lgw_SJC_01
+    kind: local_gateway
+    registrar_domain: "90236926.us10.bcld.webex.com"
+    trunk_group: "sjc.011142095030_lgu"
+    line_port: "SJC.010694176086_LGU@90236926.us10.bcld.webex.com"
+    outbound_proxy: "da03.sipconnect-us.bcld.webex.com"
+    username_env: WX_LGW_SJC_01_AUTH_USER
+    password_env: WX_LGW_AUTH_PASSWORD
+    transport: tls
+
+  - name: lgw_SJC_02
+    kind: local_gateway
+    registrar_domain: "90236926.us10.bcld.webex.com"
+    trunk_group: "sjc.020521332391_lgu"
+    line_port: "SJC.021444031253_LGU@90236926.us10.bcld.webex.com"
+    outbound_proxy: "da03.sipconnect-us.bcld.webex.com"
+    username_env: WX_LGW_SJC_02_AUTH_USER
+    password_env: WX_LGW_AUTH_PASSWORD
+    transport: tls
+
+
+  - name: lgw_Santiago_de_Chile
+    kind: local_gateway
+    registrar_domain: "90236926.us10.bcld.webex.com"
+    trunk_group: "santiago.de.chile0022058510_lgu"
+    line_port: "Santiago.de.Chile1986699795_LGU@90236926.us10.bcld.webex.com"
+    outbound_proxy: "gru01.sipconnect.bcld.webex.com"
+    username_env: WX_LGW_SANTIAGO_DE_CHILE_AUTH_USER
+    password_env: WX_LGW_AUTH_PASSWORD
+    transport: tls
+
+
+  - name: lgw_Sao_Paulo
+    kind: local_gateway
+    registrar_domain: "90236926.us10.bcld.webex.com"
+    trunk_group: "so.paulo1078470146_lgu"
+    line_port: "So.Paulo0504698976_LGU@90236926.us10.bcld.webex.com"
+    outbound_proxy: "gru01.sipconnect.bcld.webex.com"
+    username_env: WX_LGW_SAO_PAULO_AUTH_USER
+    password_env: WX_LGW_AUTH_PASSWORD
+    transport: tls
+
+
+  - name: lgw_trunk1
+    kind: local_gateway
+    registrar_domain: "90236926.us10.bcld.webex.com"
+    trunk_group: "trunk1.jkrohn-sandbox.wbx.ai"
+    line_port: "trunk10787703485_LGU@90236926.us10.bcld.webex.com"
+    outbound_proxy: "us01.sipconnect.bcld.webex.com"
+    username_env: WX_LGW_TRUNK1_AUTH_USER
+    password_env: WX_LGW_AUTH_PASSWORD
+    transport: tls
+
+
 
 targets: []

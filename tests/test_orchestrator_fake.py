@@ -767,6 +767,99 @@ def test_endpoint_behavior_registers_and_places_outbound_call_from_entry(tmp_pat
     )
 
 
+def test_endpoint_behavior_wait_fails_fast_on_unhandled_call_disconnect(tmp_path: Path) -> None:
+    """Verify state waits stop when an owned call disconnects without a rule.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
+    lab = _lab(tmp_path)
+    scenario = parse_scenario(
+        {
+            "name": "behavior-unhandled-call-disconnect",
+            "behaviors": {
+                "caller": {
+                    "initial_state": "unregistered",
+                    "states": {
+                        "unregistered": {
+                            "entry": [{"action": "register"}],
+                            "on": {"registered": {"next_state": "idle"}},
+                        },
+                        "idle": {
+                            "on": {
+                                "scenario_trigger": {
+                                    "name": "start",
+                                    "next_state": "calling",
+                                }
+                            }
+                        },
+                        "calling": {
+                            "entry": [
+                                {
+                                    "action": "call",
+                                    "target": "bob",
+                                    "use_target_extension": True,
+                                    "save_as": "outbound",
+                                }
+                            ],
+                            "on": {
+                                "call_state": {
+                                    "call": "outbound",
+                                    "state": "connected",
+                                    "next_state": "connected",
+                                }
+                            },
+                        },
+                        "connected": {"on": {"call_state": {"state": "disconnected"}}},
+                    },
+                },
+                "callee": {
+                    "initial_state": "unregistered",
+                    "states": {
+                        "unregistered": {
+                            "entry": [{"action": "register"}],
+                            "on": {"registered": {"next_state": "idle"}},
+                        },
+                        "idle": {
+                            "on": {
+                                "call_received": {
+                                    "save_call_as": "inbound",
+                                    "actions": [{"action": "reject", "call": "inbound"}],
+                                }
+                            }
+                        },
+                    },
+                },
+            },
+            "endpoints": {
+                "alice": {"client": "alice", "behavior": "caller"},
+                "bob": {"client": "bob", "behavior": "callee"},
+            },
+            "steps": [
+                {"action": "wait_behavior_state", "endpoint": "alice", "state": "idle", "timeout": 2},
+                {"action": "wait_behavior_state", "endpoint": "bob", "state": "idle", "timeout": 2},
+                {"action": "trigger_behavior", "endpoint": "alice", "name": "start"},
+                {"action": "wait_behavior_state", "endpoint": "alice", "state": "connected", "timeout": 10},
+            ],
+        }
+    )
+
+    async def run() -> None:
+        """Run the disconnect scenario inside a managed fake lab.
+
+        :returns: None.
+        """
+
+        async with lab:
+            await lab.run_scenario(scenario)
+
+    import asyncio
+
+    with pytest.raises(ScenarioError, match="disconnected while endpoint 'alice'.*no rule handled"):
+        asyncio.run(run())
+
+
 def test_endpoint_behavior_trigger_barrier_starts_call_after_callee_ready(tmp_path: Path) -> None:
     """Verify scripted triggers can start behavior calls after readiness waits.
 
