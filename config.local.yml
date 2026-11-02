@@ -12,9 +12,9 @@ clients:
     transport: tls
     enable_video: false
   - name: Heidi
-    id_uri: "sip:lqtwbjyh23_AFFEAFFE0002@90236926.us10.bcld.webex.com"
+    id_uri: "sip:dy5dvw1bea_AFFEAFFE0002@90236926.us10.bcld.webex.com"
     registrar_uri: "sip:90236926.us10.bcld.webex.com"
-    proxy_uri: "sips:jfk06.hosted-us.bcld.webex.com;lr"
+    proxy_uri: "sips:dfw06.hosted-us.bcld.webex.com;lr"
     username_env: WX_SIP_HEIDI_USER
     password_env: WX_SIP_HEIDI_PASSWORD
     extension: "7109"
