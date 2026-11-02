@@ -95,7 +95,7 @@ clients:
     transport: tls
 
 
-  - name: lgw_darmstadt
+  - name: lgw_Darmstadt
     kind: local_gateway
     registrar_domain: "90236926.us10.bcld.webex.com"
     trunk_group: "darmstadt0906895623_lgu"

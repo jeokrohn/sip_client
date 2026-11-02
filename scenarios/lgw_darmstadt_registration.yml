@@ -1,6 +1,6 @@
 name: lgw-darmstadt-registration
 steps:
   - action: register
-    client: lgw_darmstadt
+    client: lgw_Darmstadt
     timeout: 30
     stay_registered: true

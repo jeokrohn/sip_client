@@ -106,7 +106,7 @@ behaviors:
 
 endpoints:
   lgw_darmstadt:
-    client: lgw_darmstadt
+    client: lgw_Darmstadt
     behavior: lgw_caller
   lgw_Chicago:
     client: lgw_Chicago
