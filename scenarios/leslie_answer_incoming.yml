@@ -1,3 +1,4 @@
+# register phone and answer incoming call, play TTS, wait for hangup
 name: leslie-answer-incoming
 steps:
   - action: register

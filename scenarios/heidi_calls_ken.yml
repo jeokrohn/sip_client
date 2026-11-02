@@ -1,3 +1,5 @@
+# Heidi calls Ken, Ken answers, and Ken records the call while Heidi plays a TTS message.  The recording is marked
+# with a basic audio marker.
 name: basic-audio-marker
 steps:
   - action: register

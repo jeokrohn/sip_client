@@ -1,3 +1,4 @@
+# Leslie calls 7109, plays TTS, and waits for hangup
 name: leslie-call-7109
 steps:
   - action: register
