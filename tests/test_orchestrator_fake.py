@@ -11,6 +11,7 @@ import pytest
 from wxcalls.artifacts import ArtifactWriter
 from wxcalls.backends.base import CallHandle
 from wxcalls.backends.fake import FakeSipBackend
+from wxcalls.behavior import BehaviorEvent, BehaviorRuntime
 from wxcalls.config import LabConfig, SipClientConfig
 from wxcalls.exceptions import ScenarioError
 from wxcalls.media import MediaAsset, create_silence_wav, generate_marker_tone
@@ -89,6 +90,61 @@ class TimingFakeSipBackend(FakeSipBackend):
         self.media_events.append(("record_start", loop.time()))
         await super().record_wav(call, output_path, seconds)
         self.media_events.append(("record_end", loop.time()))
+
+
+def test_endpoint_behavior_ignores_queued_state_from_replaced_call_alias(tmp_path: Path) -> None:
+    """Ignore an old call's queued disconnect after its alias is reused.
+
+    :param tmp_path: Temporary pytest directory.
+    :returns: None.
+    """
+
+    lab = _lab(tmp_path)
+    scenario = parse_scenario(
+        {
+            "behaviors": {
+                "caller": {
+                    "initial_state": "loop",
+                    "states": {
+                        "loop": {"on": {"scenario_trigger": {"name": "finish", "next_state": "done"}}},
+                        "done": {"entry": [{"action": "cancel_timer", "name": "unused"}]},
+                    },
+                }
+            },
+            "endpoints": {"alice": {"client": "alice", "behavior": "caller"}},
+            "steps": [{"action": "register", "client": "alice"}],
+        }
+    )
+
+    async def run() -> None:
+        """Deliver a stale disconnect after replacing its call alias.
+
+        :returns: None.
+        """
+
+        async with lab:
+            runtime = BehaviorRuntime(lab, scenario)
+            endpoint = runtime._endpoint_runtime(scenario.endpoints["alice"])
+            old_call = CallHandle("old", "alice", "sip:bob@example.invalid", state="disconnected")
+            new_call = CallHandle("new", "alice", "sip:bob@example.invalid", state="calling")
+            lab.calls["alice.outbound"] = new_call
+            endpoint.call_refs.add("alice.outbound")
+
+            await runtime._handle_event(
+                endpoint,
+                BehaviorEvent(
+                    name="call_state",
+                    endpoint="alice",
+                    call_ref="alice.outbound",
+                    call=old_call,
+                    state="disconnected",
+                ),
+            )
+
+            assert endpoint.unhandled_disconnect is None
+            assert endpoint.state == "loop"
+
+    asyncio.run(run())
 
 
 class CancellableRecordSipBackend(FakeSipBackend):

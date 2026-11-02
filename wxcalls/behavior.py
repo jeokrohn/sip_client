@@ -408,6 +408,16 @@ class BehaviorRuntime:
         :raises ScenarioError: If a matching rule action fails.
         """
 
+        if (
+            event.name in {"call_state", "media_active"}
+            and event.call_ref is not None
+            and event.call is not None
+            and self.lab.calls.get(event.call_ref) is not event.call
+        ):
+            # Polling can queue an event from the previous leg just before an
+            # alias is reused. Ignore it once the alias points to its new leg.
+            return
+
         self._record_behavior_event(runtime, event)
         rule = self._matching_rule(runtime, event)
         if rule is None:
